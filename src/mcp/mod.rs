@@ -150,60 +150,11 @@ impl ServerControl {
     }
 
     pub async fn start(&self, addr: Option<&str>) -> Result<(), NexaError> {
-        // Start the server directly
-        if let Err(e) = self.server.start(addr).await {
+        if let Err(e) = self.server.start_server().await {
             error!("Failed to start server: {}", e);
             return Err(e);
         }
-        
-        // Wait for server to be ready
-        let timeout_duration = Duration::from_secs(10);
-        let start_time = tokio::time::Instant::now();
-        
-        while start_time.elapsed() < timeout_duration {
-            match self.server.get_state().await {
-                ServerState::Running => {
-                    if let Some(addr) = self.server.get_bound_addr().await {
-                        info!("Server started successfully on {}", addr);
-                        return Ok(());
-                    }
-                }
-                ServerState::Stopped | ServerState::Stopping => {
-                    error!("Server stopped unexpectedly during startup");
-                    return Err(NexaError::system("Server stopped unexpectedly during startup"));
-                }
-                ServerState::Error(err) => {
-                    error!("Server in error state: {}", err);
-                    self.monitoring.raise_alert(
-                        AlertLevel::Error,
-                        format!("Server error: {}", err),
-                        HashMap::new(),
-                    ).await;
-                    return Err(NexaError::system("Server in error state"));
-                }
-                ServerState::Maintenance => {
-                    info!("Server in maintenance mode");
-                    self.monitoring.raise_alert(
-                        AlertLevel::Warning,
-                        "Server in maintenance mode".to_string(),
-                        HashMap::new(),
-                    ).await;
-                    return Err(NexaError::system("Server in maintenance mode"));
-                }
-                ServerState::Starting => {
-                    // Check if we have a bound address but haven't transitioned to Running yet
-                    if let Some(addr) = self.server.get_bound_addr().await {
-                        debug!("Server bound to {} but still in Starting state, waiting...", addr);
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-
-        error!("Server failed to start within timeout");
-        // Try to stop the server if it's stuck
-        let _ = self.stop().await;
-        Err(NexaError::system("Server failed to start within timeout"))
+        Ok(())
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {

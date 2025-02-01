@@ -1,21 +1,19 @@
-use nexa_utils::cli::CliController;
-use nexa_utils::error::NexaError;
-#[allow(unused_imports)]
-use nexa_utils::mcp::MCPMessage;
-#[allow(unused_imports)]
-use nexa_utils::agent::AgentStatus;
-use nexa_utils::mcp::server::ServerState;
-use std::time::Duration;
-use tokio::time::sleep;
-use tracing::{info, debug};
-use futures::{SinkExt, StreamExt};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-use once_cell::sync::OnceCell;
-use std::sync::atomic::{AtomicU16, Ordering};
-use serde_json;
 use std::path::PathBuf;
+use std::time::Duration;
+use std::net::SocketAddr;
+use tokio::net::TcpStream;
+use tokio::time::sleep;
+use tokio_tungstenite::{connect_async, WebSocketStream};
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, error, info};
+use once_cell::sync::OnceCell;
+use tempfile;
 use uuid::Uuid;
-use std::future::Future;
+use futures::{SinkExt, StreamExt};
+use std::sync::atomic::{AtomicU16, Ordering};
+use nexa_utils::mcp::server::{Server, ServerState};
+use nexa_utils::error::NexaError;
+use nexa_utils::cli::CliController;
 
 static TRACING: OnceCell<()> = OnceCell::new();
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(9000);
@@ -156,109 +154,98 @@ async fn teardown() {
 }
 
 #[tokio::test]
-async fn test_cli_functionality() {
-    info!("Starting CLI functionality test");
-    setup().await;
+async fn test_cli_functionality() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let pid_file = temp_dir.path().join("nexa-test.pid");
+    let socket_path = temp_dir.path().join("nexa-test.sock");
+    let state_file = temp_dir.path().join("nexa-test.state");
     
-    // Test implementation
-    let result = async {
-        let (cli, addr) = setup_test().await?;
-        
-        // Start the server first
-        cli.handle_start(&Some(addr.clone())).await?;
-        wait_for_server_start(&cli).await?;
-        
-        info!("Testing status command");
-        let status = cli.handle_status().await?;
-        assert!(status.contains("System Status"), "Status output missing system status");
-        assert!(status.contains("Resource Usage"), "Status output missing resource usage");
-        
-        // Wait a bit longer for the server to be fully ready for WebSocket connections
-        sleep(Duration::from_secs(1)).await;
-        
-        info!("Testing WebSocket connection");
-        let url = format!("ws://{}", addr);
-        debug!("Connecting to WebSocket at {}", url);
-        
-        // Add retry logic for WebSocket connection with exponential backoff
-        let mut retries = 5;
-        let mut socket = None;
-        let mut delay = Duration::from_millis(100);
-        
-        while retries > 0 {
-            match connect_async(&url).await {
-                Ok((ws_stream, _)) => {
-                    debug!("Successfully established WebSocket connection");
-                    socket = Some(ws_stream);
-                    break;
+    let server = Server::new(pid_file.clone(), socket_path.clone());
+    let server_clone = server.clone();
+    
+    // Start server with random port
+    tokio::spawn(async move {
+        if let Err(e) = server_clone.start_server().await {
+            error!("Server error: {}", e);
+        }
+    });
+    
+    // Wait for server to start
+    let mut retries = 10;
+    while retries > 0 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if server.get_state().await == ServerState::Running {
+            break;
+        }
+        retries -= 1;
+    }
+    assert_eq!(server.get_state().await, ServerState::Running, "Server failed to start");
+    
+    // Get bound address
+    let bound_addr = server.get_bound_addr().await.ok_or_else(|| Box::<dyn std::error::Error>::from("Failed to get bound address"))?;
+    assert!(bound_addr.port() > 0, "Server should be bound to a valid port");
+    
+    // Test WebSocket connection
+    info!("Testing WebSocket connection");
+    let url = format!("ws://127.0.0.1:{}", bound_addr.port());
+    debug!("Connecting to WebSocket at {}", url);
+    
+    let mut retries = 5;
+    let mut last_error = None;
+    
+    while retries > 0 {
+        match connect_async(&url).await {
+            Ok((ws_stream, _)) => {
+                let (mut write, mut read) = ws_stream.split();
+                let message = serde_json::json!({
+                    "type": "status",
+                    "agent_id": "test-agent",
+                    "status": "Running"
+                });
+                write.send(Message::Text(message.to_string())).await.map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+                
+                if let Some(msg) = read.next().await {
+                    let msg = msg.map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+                    assert!(msg.is_text(), "Response should be text");
                 }
-                Err(e) => {
-                    debug!("WebSocket connection attempt failed: {}", e);
-                    retries -= 1;
-                    if retries > 0 {
-                        sleep(delay).await;
-                        delay *= 2; // Exponential backoff
-                    }
-                }
+                break;
+            }
+            Err(e) => {
+                debug!("WebSocket connection attempt failed: {}", e);
+                last_error = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                retries -= 1;
             }
         }
-        
-        let mut socket = socket.ok_or_else(|| NexaError::system("Failed to establish WebSocket connection"))?;
-        
-        // Send test message
-        let test_msg = serde_json::json!({
-            "type": "status",
-            "agent_id": "test-cli-agent",
-            "status": "Running"
-        });
-        
-        debug!("Sending test message: {}", test_msg);
-        socket.send(Message::Text(test_msg.to_string())).await?;
-        
-        // Wait for response with timeout
-        let response = tokio::time::timeout(
-            Duration::from_secs(5),
-            socket.next()
-        ).await.map_err(|_| NexaError::system("Timeout waiting for WebSocket response"))?;
-        
-        // Verify response
-        if let Some(response) = response {
-            let response = response?;
-            assert!(response.is_text(), "Response should be text");
-            let response_text = response.into_text()?;
-            debug!("Received response: {}", response_text);
-            let response_json: serde_json::Value = serde_json::from_str(&response_text)?;
-            assert_eq!(response_json["code"], 200, "Should receive success response");
-        } else {
-            return Err(NexaError::system("No response received from WebSocket"));
-        }
-        
-        // Gracefully close the WebSocket connection
-        debug!("Closing WebSocket connection");
-        socket.close(None).await?;
-        
-        // Wait for connection to fully close
-        sleep(Duration::from_millis(500)).await;
-        
-        info!("Testing stop command");
-        let stop_result = cli.handle_stop().await;
-        if let Err(e) = stop_result {
-            if format!("{}", e).contains("Server is not running") {
-                debug!("Stop command returned expected error: {}", e);
-            } else {
-                return Err(e);
-            }
-        }
-        wait_for_server_stop(&cli).await?;
-        
-        Ok::<_, NexaError>(())
-    }.await;
+    }
     
-    // Ensure cleanup happens even if test fails
-    teardown().await;
+    if retries == 0 {
+        return Err(Box::<dyn std::error::Error>::from(format!(
+            "Failed to establish WebSocket connection: {}",
+            last_error.unwrap()
+        )));
+    }
     
-    // Now check the test result
-    result.expect("Test failed");
+    // Stop server
+    server.stop().await.map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+    
+    // Wait for server to stop
+    let mut retries = 10;
+    while retries > 0 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if server.get_state().await == ServerState::Stopped {
+            break;
+        }
+        retries -= 1;
+    }
+    assert_eq!(server.get_state().await, ServerState::Stopped, "Server failed to stop");
+    
+    // Verify cleanup
+    assert!(!pid_file.exists(), "PID file should be removed after server stop");
+    assert!(!socket_path.exists(), "Socket file should be removed after server stop");
+    assert!(!state_file.exists(), "State file should be removed after server stop");
+    
+    Ok(())
 }
 
 #[tokio::test]

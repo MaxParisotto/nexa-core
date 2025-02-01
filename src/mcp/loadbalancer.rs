@@ -3,8 +3,8 @@ use tokio::sync::{RwLock, Semaphore};
 use std::collections::{HashMap, VecDeque};
 use tokio::net::TcpStream;
 use std::net::SocketAddr;
-use std::time::{Duration, SystemTime, Instant};
-use tracing::{debug, error, info, warn};
+use std::time::{Duration, SystemTime};
+use tracing::{debug, error, warn};
 use crate::error::NexaError;
 
 #[derive(Debug, Clone)]

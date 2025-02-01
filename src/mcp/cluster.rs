@@ -2,11 +2,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::Duration;
 use std::time::SystemTime;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use crate::error::NexaError;
-use tokio::sync::broadcast;
 use uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

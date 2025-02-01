@@ -8,13 +8,10 @@
 use clap::{Parser, Subcommand};
 use tracing::{debug, error, info, warn};
 use crate::mcp::ServerControl;
-use crate::monitoring::{AlertLevel, SystemHealth};
+use crate::monitoring::SystemHealth;
 use crate::mcp::server::ServerState;
 use std::path::PathBuf;
 use crate::error::NexaError;
-#[cfg(unix)]
-use nix::sys::signal;
-use nix::unistd::Pid;
 use std::time::Duration;
 use std::cmp::min;
 use std::fs;
