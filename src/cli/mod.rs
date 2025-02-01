@@ -42,6 +42,88 @@ enum Commands {
     
     /// Get the status of the Nexa Core server
     Status,
+
+    /// Manage server configuration
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCommands,
+    },
+
+    /// Manage cluster operations
+    Cluster {
+        #[command(subcommand)]
+        cmd: ClusterCommands,
+    },
+
+    /// Monitor server metrics and health
+    Monitor {
+        #[command(subcommand)]
+        cmd: MonitorCommands,
+    },
+
+    /// Manage active connections
+    Connections {
+        #[command(subcommand)]
+        cmd: ConnectionCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Show current configuration
+    Show,
+    /// Set configuration value
+    Set {
+        key: String,
+        value: String,
+    },
+    /// Reset configuration to defaults
+    Reset,
+}
+
+#[derive(Subcommand)]
+enum ClusterCommands {
+    /// Show cluster status
+    Status,
+    /// Join an existing cluster
+    Join {
+        /// Address of any cluster node
+        address: String,
+    },
+    /// Leave the cluster gracefully
+    Leave,
+    /// List all cluster nodes
+    Nodes,
+}
+
+#[derive(Subcommand)]
+enum MonitorCommands {
+    /// Show detailed metrics
+    Metrics,
+    /// Show health status
+    Health,
+    /// View or follow logs
+    Logs {
+        /// Follow log output
+        #[arg(short, long)]
+        follow: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConnectionCommands {
+    /// List active connections
+    List,
+    /// Set connection limits
+    Limit {
+        /// Maximum number of connections
+        max: u32,
+    },
+    /// Disconnect client(s)
+    Disconnect {
+        /// Client ID or 'all'
+        target: String,
+    },
 }
 
 pub struct CliController {
@@ -407,6 +489,105 @@ impl CliController {
     pub fn get_state_file_path(&self) -> PathBuf {
         self.state_file.clone()
     }
+
+    async fn handle_monitor_metrics(&self) -> Result<String, NexaError> {
+        let mut output = String::new();
+        output.push_str("\nDetailed System Metrics:\n");
+        
+        // System metrics
+        let sys = sysinfo::System::new_all();
+        output.push_str("\n🖥️  Hardware Metrics:\n");
+        output.push_str(&format!("  CPU Usage: {:.1}%\n", sys.global_cpu_info().cpu_usage()));
+        output.push_str(&format!("  Memory Used: {:.1} MB\n", sys.used_memory() / 1024));
+        output.push_str(&format!("  Memory Total: {:.1} MB\n", sys.total_memory() / 1024));
+        output.push_str(&format!("  Memory Usage: {:.1}%\n", 
+            (sys.used_memory() as f64 / sys.total_memory() as f64) * 100.0));
+            
+        // Server metrics
+        if self.is_server_running().await {
+            if let Ok(metrics) = self.server_control.get_metrics().await {
+                output.push_str("\n🔄 Server Metrics:\n");
+                output.push_str(&format!("  Active Connections: {}\n", metrics.active_agents));
+                output.push_str(&format!("  Error Count: {}\n", metrics.error_count));
+                output.push_str(&format!("  Token Usage: {}\n", metrics.token_usage));
+                output.push_str(&format!("  Token Cost: ${:.2}\n", metrics.token_cost));
+            }
+        }
+        
+        Ok(output)
+    }
+
+    async fn handle_monitor_health(&self) -> Result<String, NexaError> {
+        let mut output = String::new();
+        output.push_str("\nSystem Health Status:\n");
+        
+        if self.is_server_running().await {
+            if let Ok(health) = self.server_control.check_health().await {
+                output.push_str(&format!("\n🏥 Health Check:\n"));
+                output.push_str(&format!("  Status: {}\n", 
+                    if health.is_healthy { "✅ Healthy" } else { "❌ Unhealthy" }));
+                output.push_str(&format!("  Message: {}\n", health.message));
+                
+                // Get detailed metrics for health analysis
+                if let Ok(metrics) = self.server_control.get_metrics().await {
+                    output.push_str("\n📊 Health Metrics:\n");
+                    
+                    // CPU health
+                    let cpu_status = if metrics.cpu_usage < 70.0 { "✅ Good" }
+                        else if metrics.cpu_usage < 85.0 { "⚠️ Warning" }
+                        else { "❌ Critical" };
+                    output.push_str(&format!("  CPU Load: {} ({:.1}%)\n", cpu_status, metrics.cpu_usage));
+                    
+                    // Memory health
+                    let memory_used_pct = (metrics.memory_used as f64 / metrics.memory_allocated as f64) * 100.0;
+                    let memory_status = if memory_used_pct < 75.0 { "✅ Good" }
+                        else if memory_used_pct < 90.0 { "⚠️ Warning" }
+                        else { "❌ Critical" };
+                    output.push_str(&format!("  Memory Usage: {} ({:.1}%)\n", memory_status, memory_used_pct));
+                    
+                    // Connection health
+                    let conn_status = if metrics.active_agents < 100 { "✅ Good" }
+                        else if metrics.active_agents < 200 { "⚠️ Warning" }
+                        else { "❌ Critical" };
+                    output.push_str(&format!("  Connections: {} ({})\n", conn_status, metrics.active_agents));
+                }
+            }
+        } else {
+            output.push_str("\n❌ Server is not running\n");
+        }
+        
+        Ok(output)
+    }
+
+    async fn handle_monitor_logs(&self, follow: bool) -> Result<(), NexaError> {
+        let log_file = self.pid_file.with_extension("log");
+        
+        if follow {
+            // Use tail -f equivalent for following logs
+            use tokio::process::Command;
+            
+            Command::new("tail")
+                .arg("-f")
+                .arg(&log_file)
+                .spawn()?
+                .wait()
+                .await?;
+        } else {
+            // Read and display last 50 lines
+            if let Ok(content) = tokio::fs::read_to_string(&log_file).await {
+                let lines: Vec<&str> = content.lines().collect();
+                let start = if lines.len() > 50 { lines.len() - 50 } else { 0 };
+                
+                for line in &lines[start..] {
+                    println!("{}", line);
+                }
+            } else {
+                println!("No logs found or log file is not accessible");
+            }
+        }
+        
+        Ok(())
+    }
 }
 
 impl Clone for CliController {
@@ -442,6 +623,89 @@ impl CliController {
                 let status = self.handle_status().await?;
                 println!("{}", status);
                 Ok(())
+            }
+            Commands::Config { cmd } => {
+                match cmd {
+                    ConfigCommands::Show => {
+                        info!("Showing current configuration");
+                        // Implementation needed
+                        Ok(())
+                    }
+                    ConfigCommands::Set { key, value } => {
+                        info!("Setting configuration value");
+                        // Implementation needed
+                        Ok(())
+                    }
+                    ConfigCommands::Reset => {
+                        info!("Resetting configuration to defaults");
+                        // Implementation needed
+                        Ok(())
+                    }
+                }
+            }
+            Commands::Cluster { cmd } => {
+                match cmd {
+                    ClusterCommands::Status => {
+                        info!("Showing cluster status");
+                        // Implementation needed
+                        Ok(())
+                    }
+                    ClusterCommands::Join { address } => {
+                        info!("Joining cluster with address: {}", address);
+                        // Implementation needed
+                        Ok(())
+                    }
+                    ClusterCommands::Leave => {
+                        info!("Leaving cluster gracefully");
+                        // Implementation needed
+                        Ok(())
+                    }
+                    ClusterCommands::Nodes => {
+                        info!("Listing all cluster nodes");
+                        // Implementation needed
+                        Ok(())
+                    }
+                }
+            }
+            Commands::Monitor { cmd } => {
+                match cmd {
+                    MonitorCommands::Metrics => {
+                        info!("Showing detailed metrics");
+                        let metrics = self.handle_monitor_metrics().await?;
+                        println!("{}", metrics);
+                        Ok(())
+                    }
+                    MonitorCommands::Health => {
+                        info!("Showing health status");
+                        let health = self.handle_monitor_health().await?;
+                        println!("{}", health);
+                        Ok(())
+                    }
+                    MonitorCommands::Logs { follow } => {
+                        info!("Viewing or following logs");
+                        self.handle_monitor_logs(follow).await?;
+                        Ok(())
+                    }
+                }
+            }
+            Commands::Connections { cmd } => {
+                match cmd {
+                    ConnectionCommands::List => {
+                        info!("Listing active connections");
+                        // Implementation needed
+                        Ok(())
+                    }
+                    ConnectionCommands::Limit { max } => {
+                        info!("Setting connection limits");
+                        // Implementation needed
+                        Ok(())
+                    }
+                    ConnectionCommands::Disconnect { target } => {
+                        info!("Disconnecting client(s)");
+                        // Implementation needed
+                        Ok(())
+                    }
+                }
             }
         }
     }
