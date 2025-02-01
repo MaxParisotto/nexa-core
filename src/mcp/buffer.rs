@@ -5,7 +5,6 @@ use parking_lot::RwLock;
 use tracing::{debug, error};
 use serde::{Serialize, Deserialize};
 use std::time::{Duration, SystemTime};
-use uuid::Uuid; // Added missing import
 
 /// Message priority levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
@@ -174,7 +173,7 @@ impl MessageBuffer {
     
     /// Clean up expired messages
     pub async fn cleanup(&self) {
-        let now = SystemTime::now();
+        let _now = SystemTime::now();
         let mut total_removed = 0;
         
         {
@@ -218,6 +217,7 @@ impl MessageBuffer {
 mod tests {
     use super::*;
     use std::time::Duration;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn test_basic_operations() {

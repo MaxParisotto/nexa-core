@@ -1,6 +1,6 @@
 [package]
 name = "nexa-core"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 description = "High-performance WebSocket server implementation in Rust"
 authors = ["Your Name <your.email@example.com>"]
