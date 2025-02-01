@@ -21,8 +21,15 @@ fn setup_logging() {
     TRACING.get_or_init(|| {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .with_test_writer()
-            .init();
+            .with_thread_ids(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_target(true)
+            .with_thread_names(true)
+            .with_level(true)
+            .with_ansi(true)
+            .try_init()
+            .ok();
     });
 }
 
@@ -154,7 +161,7 @@ async fn setup() -> Result<(CliController, String), NexaError> {
     
     // Use 127.0.0.1 for both server and client to ensure local connections work
     let addr = format!("127.0.0.1:{}", port);
-    debug!("Using address {} for server and client", addr);
+    info!("Using address {} for server and client", addr);
     
     // Clean up any existing files
     let cleanup = async {
@@ -299,6 +306,8 @@ async fn test_cli_concurrent_connections() -> Result<(), NexaError> {
     }
     
     if !connected {
+        let _ = cli.handle_stop().await;
+        let _ = wait_for_server_stop(&cli).await;
         return Err(NexaError::system("Failed to verify server is accepting connections"));
     }
     
@@ -399,6 +408,9 @@ async fn test_cli_concurrent_connections() -> Result<(), NexaError> {
     
     // Wait for all connections with improved error handling
     info!("Waiting for all connections to complete");
+    let mut all_successful = true;
+    let mut last_error = None;
+    
     for (i, handle) in handles.into_iter().enumerate() {
         info!("Waiting for connection {} to complete", i);
         match handle.await {
@@ -407,26 +419,18 @@ async fn test_cli_concurrent_connections() -> Result<(), NexaError> {
                     Ok(_) => info!("Connection {} completed successfully", i),
                     Err(e) => {
                         error!("Connection {} failed with error: {}", i, e);
-                        // Stop server before returning error
-                        let _ = cli.handle_stop().await;
-                        let _ = wait_for_server_stop(&cli).await;
-                        return Err(e);
+                        all_successful = false;
+                        last_error = Some(e);
                     }
                 }
             }
             Err(e) => {
                 error!("Task {} join error: {}", i, e);
-                // Stop server before returning error
-                let _ = cli.handle_stop().await;
-                let _ = wait_for_server_stop(&cli).await;
-                return Err(NexaError::system(format!("Task {} join error: {}", i, e)));
+                all_successful = false;
+                last_error = Some(NexaError::system(format!("Task {} join error: {}", i, e)));
             }
         }
     }
-    
-    // Add delay before stopping to ensure connections are established
-    info!("All connections completed, waiting before stopping server");
-    sleep(Duration::from_millis(500)).await;
     
     // Stop server
     info!("Stopping server");
@@ -434,8 +438,13 @@ async fn test_cli_concurrent_connections() -> Result<(), NexaError> {
     info!("Waiting for server to stop");
     wait_for_server_stop(&cli).await?;
     
-    info!("Test completed successfully");
-    Ok(())
+    // Return result
+    if all_successful {
+        info!("Test completed successfully");
+        Ok(())
+    } else {
+        Err(last_error.unwrap_or_else(|| NexaError::system("Test failed but no error was captured")))
+    }
 }
 
 #[tokio::test]

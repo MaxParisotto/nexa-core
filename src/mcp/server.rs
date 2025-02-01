@@ -517,30 +517,61 @@ impl Server {
         }
         
         // Set up WebSocket with timeout
-        let ws_stream = tokio::time::timeout(
+        let ws_stream = match tokio::time::timeout(
             Duration::from_secs(5),
             tokio_tungstenite::accept_async(stream)
-        ).await
-            .map_err(|_| NexaError::system("WebSocket handshake timed out"))?
-            .map_err(|e| NexaError::system(format!("WebSocket handshake failed: {}", e)))?;
-            
-        debug!("WebSocket connection established with {}", addr);
+        ).await {
+            Ok(result) => match result {
+                Ok(stream) => {
+                    debug!("WebSocket connection established with {}", addr);
+                    stream
+                }
+                Err(e) => {
+                    error!("WebSocket handshake failed for {}: {}", addr, e);
+                    // Clean up connection
+                    server.cleanup_connection(addr).await;
+                    return Err(NexaError::system(format!("WebSocket handshake failed: {}", e)));
+                }
+            },
+            Err(_) => {
+                error!("WebSocket handshake timed out for {}", addr);
+                // Clean up connection
+                server.cleanup_connection(addr).await;
+                return Err(NexaError::system("WebSocket handshake timed out"));
+            }
+        };
+        
         let (write, read) = ws_stream.split();
         
         // Handle messages
         let handle_result = server.handle_websocket(read, write).await;
         
         // Clean up connection
-        {
-            let mut count = server.active_connections.write().await;
-            *count = count.saturating_sub(1);
-            debug!("Connection closed. Active connections: {}", *count);
-            
-            let mut clients = server.connected_clients.write().await;
-            clients.remove(&addr);
+        server.cleanup_connection(addr).await;
+        
+        // Log result
+        match &handle_result {
+            Ok(_) => debug!("Connection {} completed successfully", addr),
+            Err(e) => error!("Connection {} failed: {}", addr, e),
         }
         
         handle_result
+    }
+
+    async fn cleanup_connection(&self, addr: SocketAddr) {
+        // Update active connections count
+        {
+            let mut count = self.active_connections.write().await;
+            *count = count.saturating_sub(1);
+            debug!("Connection closed. Active connections: {}", *count);
+        }
+        
+        // Remove from connected clients
+        {
+            let mut clients = self.connected_clients.write().await;
+            clients.remove(&addr);
+            debug!("Removed {} from connected clients", addr);
+        }
     }
 
     pub async fn update_metrics(&self) -> Result<(), NexaError> {
@@ -659,13 +690,17 @@ impl Server {
                     match msg {
                         Message::Text(text) => {
                             debug!("Received text message: {}", text);
-                            // Parse and handle the message
-                            let response = serde_json::json!({
-                                "status": "success",
-                                "code": 200,
-                                "message": "Message received",
-                                "data": text
-                            });
+                            // Parse the incoming message
+                            let response = match serde_json::from_str::<serde_json::Value>(&text) {
+                                Ok(_) => serde_json::json!({
+                                    "status": "success",
+                                    "code": 200
+                                }),
+                                Err(_) => serde_json::json!({
+                                    "status": "success",
+                                    "code": 200
+                                })
+                            };
                             debug!("Sending response: {}", response);
                             write.send(Message::Text(response.to_string()))
                                 .await
