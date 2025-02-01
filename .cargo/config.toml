@@ -13,7 +13,7 @@ test = "test -- --nocapture --test-threads=1 --show-output"
 
 [build]
 # Default target for cargo build
-target = ["x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-unknown-linux-musl"]
+target = ["x86_64-unknown-linux-gnu"]
 
 [target.x86_64-apple-darwin]
 rustflags = [

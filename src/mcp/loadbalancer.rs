@@ -191,7 +191,7 @@ impl LoadBalancer {
         Err(last_error.unwrap_or_else(|| NexaError::system("Failed to get connection")))
     }
 
-    pub async fn get_connection_for_server(&self, server_id: &str, addr: SocketAddr) -> Result<TcpStream, NexaError> {
+    pub async fn get_connection_for_server(&self, _server_id: &str, addr: SocketAddr) -> Result<TcpStream, NexaError> {
         self.get_connection(addr).await
     }
 

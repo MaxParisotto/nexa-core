@@ -14,7 +14,6 @@ use std::path::PathBuf;
 use crate::error::NexaError;
 use std::time::Duration;
 use std::cmp::min;
-use std::fs;
 use sysinfo;
 
 #[derive(Parser)]
@@ -51,6 +50,17 @@ impl CliController {
         let socket_path = runtime_dir.join("nexa.sock");
         let state_file = pid_file.with_extension("state");
         debug!("Using runtime directory for PID file: {:?}", pid_file);
+        
+        // Create parent directories if they don't exist
+        if let Some(parent) = pid_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Some(parent) = socket_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Some(parent) = state_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
             
         Self {
             server_control: ServerControl::new(pid_file.clone(), socket_path.clone()),
@@ -118,15 +128,15 @@ impl CliController {
         }
     }
 
-    pub fn is_server_running(&self) -> bool {
+    pub async fn is_server_running(&self) -> bool {
         // First check if PID file exists
-        if !self.pid_file.exists() {
+        if let Err(_) = tokio::fs::metadata(&self.pid_file).await {
             debug!("PID file does not exist");
             return false;
         }
 
         // Read and validate PID
-        let pid_str = match fs::read_to_string(&self.pid_file) {
+        let pid_str = match tokio::fs::read_to_string(&self.pid_file).await {
             Ok(content) => content.trim().to_string(),
             Err(e) => {
                 debug!("Failed to read PID file: {}", e);
@@ -146,14 +156,17 @@ impl CliController {
         if !self.check_process_exists(pid) {
             debug!("Server process {} does not exist", pid);
             // Clean up stale files since the process is gone
-            if let Err(e) = self.cleanup_files() {
-                debug!("Failed to clean up stale files: {}", e);
-            }
+            let this = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = this.cleanup_files().await {
+                    debug!("Failed to clean up stale files: {}", e);
+                }
+            });
             return false;
         }
 
         // Check state file
-        let state_str = match fs::read_to_string(&self.state_file) {
+        let state_str = match tokio::fs::read_to_string(&self.state_file).await {
             Ok(content) => content.trim().to_string(),
             Err(e) => {
                 debug!("Failed to read state file: {}", e);
@@ -178,14 +191,14 @@ impl CliController {
         self.server_control.get_state().await
     }
 
-    pub fn cleanup_files(&self) -> Result<(), NexaError> {
+    pub async fn cleanup_files(&self) -> Result<(), NexaError> {
         debug!("Starting file cleanup");
         let mut cleanup_needed = false;
 
         // Try to remove PID file
-        if self.pid_file.exists() {
+        if let Ok(_) = tokio::fs::metadata(&self.pid_file).await {
             cleanup_needed = true;
-            if let Err(e) = fs::remove_file(&self.pid_file) {
+            if let Err(e) = tokio::fs::remove_file(&self.pid_file).await {
                 debug!("Failed to remove PID file: {}", e);
             } else {
                 debug!("Successfully removed PID file");
@@ -193,9 +206,9 @@ impl CliController {
         }
 
         // Try to remove state file
-        if self.state_file.exists() {
+        if let Ok(_) = tokio::fs::metadata(&self.state_file).await {
             cleanup_needed = true;
-            if let Err(e) = fs::remove_file(&self.state_file) {
+            if let Err(e) = tokio::fs::remove_file(&self.state_file).await {
                 debug!("Failed to remove state file: {}", e);
             } else {
                 debug!("Successfully removed state file");
@@ -203,9 +216,9 @@ impl CliController {
         }
 
         // Try to remove socket file
-        if self.socket_path.exists() {
+        if let Ok(_) = tokio::fs::metadata(&self.socket_path).await {
             cleanup_needed = true;
-            if let Err(e) = fs::remove_file(&self.socket_path) {
+            if let Err(e) = tokio::fs::remove_file(&self.socket_path).await {
                 debug!("Failed to remove socket file: {}", e);
             } else {
                 debug!("Successfully removed socket file");
@@ -213,10 +226,11 @@ impl CliController {
         }
 
         if cleanup_needed {
-            debug!("Cleanup completed successfully");
+            debug!("File cleanup completed");
         } else {
             debug!("No files needed cleanup");
         }
+
         Ok(())
     }
 
@@ -224,14 +238,14 @@ impl CliController {
         info!("Starting MCP server");
 
         // Check if server is already running
-        if self.is_server_running() {
+        if self.is_server_running().await {
             error!("Server is already running");
             return Err(NexaError::system("Server is already running"));
         }
 
         // Clean up any stale files
         debug!("Starting file cleanup");
-        if let Err(e) = self.cleanup_files() {
+        if let Err(e) = self.cleanup_files().await {
             error!("Failed to clean up stale files: {}", e);
             return Err(e);
         }
@@ -244,7 +258,7 @@ impl CliController {
         let mut delay = Duration::from_millis(100);
         while retries > 0 {
             debug!("Checking server state (retries left: {}, delay: {:?})", retries, delay);
-            let state = match fs::read_to_string(&self.state_file) {
+            let state = match tokio::fs::read_to_string(&self.state_file).await {
                 Ok(content) => content.trim().parse::<ServerState>()?,
                 Err(e) => {
                     debug!("Failed to read state file: {}", e);
@@ -271,7 +285,7 @@ impl CliController {
         info!("Stopping MCP server");
         
         // Check if server is running first
-        if !self.is_server_running() {
+        if !self.is_server_running().await {
             error!("Server is not running");
             return Err(NexaError::system("Server is not running"));
         }
@@ -293,9 +307,9 @@ impl CliController {
 
                     while stop_retries > 0 {
                         debug!("Checking if server has stopped (retries left: {})", stop_retries);
-                        if !self.is_server_running() {
+                        if !self.is_server_running().await {
                             // Clean up any remaining files
-                            if let Err(e) = self.cleanup_files() {
+                            if let Err(e) = self.cleanup_files().await {
                                 debug!("Failed to clean up files after stop: {}", e);
                             }
                             info!("Server stopped successfully");
@@ -319,7 +333,7 @@ impl CliController {
         // If we get here, all retries failed
         error!("Failed to stop server after retries");
         // Try to force cleanup as a last resort
-        if let Err(e) = self.cleanup_files() {
+        if let Err(e) = self.cleanup_files().await {
             debug!("Failed to clean up files after failed stop: {}", e);
         }
         Err(NexaError::system("Failed to stop server after retries"))
@@ -338,7 +352,7 @@ impl CliController {
         output.push_str(&format!("  Memory: {:.1}%\n", 
             (sys.used_memory() as f64 / sys.total_memory() as f64) * 100.0));
         
-        if self.is_server_running() {
+        if self.is_server_running().await {
             output.push_str("\nServer Status: 🟢 Running\n");
             
             // Get metrics
@@ -369,6 +383,18 @@ impl CliController {
     /// Check system health
     pub async fn check_health(&self) -> Result<SystemHealth, NexaError> {
         self.server_control.check_health().await
+    }
+
+    pub fn get_pid_file_path(&self) -> PathBuf {
+        self.pid_file.clone()
+    }
+
+    pub fn get_socket_path(&self) -> PathBuf {
+        self.socket_path.clone()
+    }
+
+    pub fn get_state_file_path(&self) -> PathBuf {
+        self.state_file.clone()
     }
 }
 

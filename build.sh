@@ -54,39 +54,49 @@ check_dependencies
 
 echo -e "${GREEN}Building Nexa Utils for multiple platforms...${NC}"
 
-# Add Rust target if not already added
-echo -e "\n${GREEN}Ensuring Rust targets are installed...${NC}"
-rustup target add x86_64-unknown-linux-musl
-rustup target add x86_64-apple-darwin
-rustup target add aarch64-apple-darwin
-
-# Build for x86_64 Linux (musl)
-echo -e "\n${GREEN}Building for x86_64 Linux (musl)...${NC}"
-if [[ "$(uname)" == "Darwin" ]]; then
-    CROSS_COMPILE=1 cargo build --release --target x86_64-unknown-linux-musl
+# Added conditional build block based on OS
+if [[ "$(uname)" == "Linux" ]]; then
+    echo -e "\n${GREEN}Detected Linux OS. Skipping macOS cross builds...${NC}"
+    if command -v musl-gcc >/dev/null 2>&1; then
+        rustup target add x86_64-unknown-linux-musl
+        echo -e "\n${GREEN}Building for x86_64 Linux (musl)...${NC}"
+        cargo build --release --target x86_64-unknown-linux-musl
+        cp target/x86_64-unknown-linux-musl/release/nexa release/nexa-x86_64-linux
+    else
+        echo -e "\n${YELLOW}musl-gcc not found. Building native Linux release...${NC}"
+        cargo build --release
+        cp target/release/nexa release/nexa-linux
+    fi
 else
-    cargo build --release --target x86_64-unknown-linux-musl
-fi
-cp target/x86_64-unknown-linux-musl/release/nexa release/nexa-x86_64-linux
-
-# Build for x86_64 macOS
-echo -e "\n${GREEN}Building for x86_64 macOS...${NC}"
-cargo build --release --target x86_64-apple-darwin
-cp target/x86_64-apple-darwin/release/nexa release/nexa-x86_64-darwin
-
-# Build for Apple Silicon
-echo -e "\n${GREEN}Building for Apple Silicon...${NC}"
-cargo build --release --target aarch64-apple-darwin
-cp target/aarch64-apple-darwin/release/nexa release/nexa-aarch64-darwin
-
-# Create universal binary for macOS
-if [[ "$(uname)" == "Darwin" ]]; then
+    echo -e "\n${GREEN}Detected Darwin OS. Building for all targets...${NC}"
+    rustup target add x86_64-unknown-linux-musl
+    rustup target add x86_64-apple-darwin
+    rustup target add aarch64-apple-darwin
+    echo -e "\n${GREEN}Building for x86_64 Linux (musl)...${NC}"
+    CROSS_COMPILE=1 cargo build --release --target x86_64-unknown-linux-musl
+    cp target/x86_64-unknown-linux-musl/release/nexa release/nexa-x86_64-linux
+    echo -e "\n${GREEN}Building for x86_64 macOS...${NC}"
+    cargo build --release --target x86_64-apple-darwin
+    cp target/x86_64-apple-darwin/release/nexa release/nexa-x86_64-darwin
+    echo -e "\n${GREEN}Building for Apple Silicon...${NC}"
+    cargo build --release --target aarch64-apple-darwin
+    cp target/aarch64-apple-darwin/release/nexa release/nexa-aarch64-darwin
     echo -e "\n${GREEN}Creating universal macOS binary...${NC}"
-    lipo -create \
-        target/x86_64-apple-darwin/release/nexa \
-        target/aarch64-apple-darwin/release/nexa \
-        -output release/nexa-universal-darwin
+    lipo -create target/x86_64-apple-darwin/release/nexa target/aarch64-apple-darwin/release/nexa -output release/nexa-universal-darwin
 fi
+
+echo -e "\n${GREEN}Cleaning build artifacts before running tests/benchmarks...${NC}"
+cargo clean
+
+echo -e "\n${GREEN}Setting native target for tests/benchmarks...${NC}"
+export CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
+
+# Added test and benchmark runs
+echo -e "\n${GREEN}Running tests...${NC}"
+cargo test --release
+
+echo -e "\n${GREEN}Running benchmarks...${NC}"
+cargo bench
 
 # Make binaries executable
 chmod +x release/nexa-*

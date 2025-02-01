@@ -150,6 +150,13 @@ impl ServerControl {
     }
 
     pub async fn start(&self, addr: Option<&str>) -> Result<(), NexaError> {
+        // Validate address if provided
+        if let Some(addr) = addr {
+            if let Err(_) = addr.parse::<std::net::SocketAddr>() {
+                return Err(NexaError::protocol("Invalid address format"));
+            }
+        }
+
         if let Err(e) = self.server.start_server().await {
             error!("Failed to start server: {}", e);
             return Err(e);

@@ -153,7 +153,7 @@ impl ClusterCoordinator {
             return Ok(());
         }
         
-        let event = ClusterEvent {
+        let _event = ClusterEvent {
             event_type: "heartbeat".to_string(),
             node_id: self.node_id.clone(),
             timestamp: SystemTime::now(),
@@ -183,7 +183,7 @@ impl ClusterCoordinator {
             state.role = NodeRole::Follower;
             state.leader_id = None;
             
-            let event = ClusterEvent {
+            let _event = ClusterEvent {
                 event_type: "leader_stepdown".to_string(),
                 node_id: self.node_id.clone(),
                 timestamp: now,
@@ -193,7 +193,7 @@ impl ClusterCoordinator {
                 }),
             };
             
-            if let Err(e) = self.event_tx.send(event) {
+            if let Err(e) = self.event_tx.send(_event) {
                 error!("Failed to broadcast event: {}", e);
                 return Err(NexaError::system(format!("Broadcast failed: {}", e)));
             }
@@ -203,14 +203,9 @@ impl ClusterCoordinator {
     }
 
     async fn calculate_health_score(&self) -> f64 {
-        // Implement health score calculation based on:
-        // - CPU usage
-        // - Memory usage
-        // - Network latency
-        // - Error rate
-        // - Request throughput
-        // TODO: Implement actual metrics
-        1.0
+        // TODO: Implement health score calculation in future release
+        // This method will calculate a health score based on system metrics
+        0.0
     }
 
     async fn broadcast_event(&self, event: ClusterEvent) -> Result<(), NexaError> {

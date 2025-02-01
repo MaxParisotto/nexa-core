@@ -1,17 +1,19 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use tokio::sync::{RwLock, watch, Notify};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::io::AsyncWriteExt;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
-use tracing::{debug, error, info, warn};
-use crate::error::NexaError;
-use std::sync::{Arc, Mutex};
 use std::net::SocketAddr;
-use std::collections::HashMap;
-use tokio_tungstenite::tungstenite::Message;
-use futures::{SinkExt, StreamExt};
+use tracing::{debug, error, info};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Message};
+use futures::stream::{SplitStream, SplitSink};
+use futures::{StreamExt, SinkExt};
 use tokio::fs;
 use crate::monitoring::AlertLevel;
+use crate::error::NexaError;
+use serde_json;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerState {
@@ -69,7 +71,7 @@ pub struct Server {
     bound_addr: Arc<RwLock<Option<std::net::SocketAddr>>>,
     state: Arc<RwLock<ServerState>>,
     shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
-    active_connections: Arc<Mutex<u32>>,
+    active_connections: Arc<RwLock<u32>>,
     server_handle: Arc<RwLock<Option<tokio::task::JoinHandle<Result<(), NexaError>>>>>,
     ready_notify: Arc<Notify>,
     metrics: Arc<RwLock<ServerMetrics>>,
@@ -91,7 +93,7 @@ impl Server {
             bound_addr: Arc::new(RwLock::new(None)),
             state: Arc::new(RwLock::new(ServerState::Stopped)),
             shutdown_tx: Arc::new(tokio::sync::Mutex::new(None)),
-            active_connections: Arc::new(Mutex::new(0)),
+            active_connections: Arc::new(RwLock::new(0)),
             server_handle: Arc::new(RwLock::new(None)),
             ready_notify: Arc::new(Notify::new()),
             metrics: Arc::new(RwLock::new(ServerMetrics {
@@ -214,7 +216,7 @@ impl Server {
         let state_file = self.pid_file.with_extension("state");
         let temp_file = state_file.with_extension("tmp");
         
-        // Ensure parent directory exists
+        // Ensure parent directory exists for both temp and final files
         if let Some(parent) = state_file.parent() {
             tokio::fs::create_dir_all(parent).await
                 .map_err(|e| NexaError::system(format!("Failed to create directory: {}", e)))?;
@@ -235,15 +237,13 @@ impl Server {
         file.sync_all().await
             .map_err(|e| NexaError::system(format!("Failed to sync file: {}", e)))?;
         
-        // Rename temporary file to actual state file
-        tokio::fs::rename(temp_file, &state_file).await
+        // Rename temp file to state file
+        tokio::fs::rename(&temp_file, &state_file).await
             .map_err(|e| NexaError::system(format!("Failed to rename file: {}", e)))?;
-        
-        // Update in-memory state
+            
+        // Update in-memory state and notify subscribers
         *self.state.write().await = state.clone();
-        
-        // Notify state change subscribers
-        let _ = self.state_change_tx.send(state);
+        self.notify_state_change(state.clone()).await;
         
         debug!("Successfully wrote state file: {}", state_file.display());
         Ok(())
@@ -252,133 +252,115 @@ impl Server {
     async fn cleanup_files(&self) -> Result<(), NexaError> {
         debug!("Starting file cleanup");
         
-        // Remove PID file
-        if let Ok(metadata) = tokio::fs::metadata(&self.pid_file).await {
-            if metadata.is_file() {
-                match tokio::fs::remove_file(&self.pid_file).await {
-                    Ok(_) => debug!("Successfully removed PID file"),
-                    Err(e) => {
-                        warn!("Failed to remove PID file: {}", e);
-                    }
-                }
+        // Remove PID file if it exists
+        if self.file_exists(&self.pid_file).await {
+            if let Err(e) = fs::remove_file(&self.pid_file).await {
+                error!("Failed to remove PID file: {}", e);
+            } else {
+                debug!("Successfully removed PID file");
             }
         }
-
-        // Remove state file
+        
+        // Remove state file if it exists
         let state_file = self.pid_file.with_extension("state");
-        if let Ok(metadata) = tokio::fs::metadata(&state_file).await {
-            if metadata.is_file() {
-                match tokio::fs::remove_file(&state_file).await {
-                    Ok(_) => debug!("Successfully removed state file"),
-                    Err(e) => {
-                        warn!("Failed to remove state file: {}", e);
-                    }
-                }
+        if self.file_exists(&state_file).await {
+            if let Err(e) = fs::remove_file(&state_file).await {
+                error!("Failed to remove state file: {}", e);
+            } else {
+                debug!("Successfully removed state file");
             }
         }
-
-        // Remove temp state file
-        let temp_state_file = state_file.with_extension("tmp");
-        if let Ok(metadata) = tokio::fs::metadata(&temp_state_file).await {
-            if metadata.is_file() {
-                match tokio::fs::remove_file(&temp_state_file).await {
-                    Ok(_) => debug!("Successfully removed temp state file"),
-                    Err(e) => {
-                        warn!("Failed to remove temp state file: {}", e);
-                    }
-                }
+        
+        // Remove socket file if it exists
+        if self.file_exists(&self.socket_path).await {
+            if let Err(e) = fs::remove_file(&self.socket_path).await {
+                error!("Failed to remove socket file: {}", e);
+            } else {
+                debug!("Successfully removed socket file");
             }
         }
-
-        // Remove socket file
-        if let Ok(metadata) = tokio::fs::metadata(&self.socket_path).await {
-            if metadata.is_file() {
-                match tokio::fs::remove_file(&self.socket_path).await {
-                    Ok(_) => debug!("Successfully removed socket file"),
-                    Err(e) => {
-                        warn!("Failed to remove socket file: {}", e);
-                    }
-                }
-            }
-        }
-
+        
         debug!("File cleanup completed successfully");
         Ok(())
     }
 
     pub async fn start_server(&self) -> Result<(), NexaError> {
         debug!("Starting server");
+        
+        // Check if server is already running
+        if self.server_handle.read().await.is_some() {
+            return Err(NexaError::system("Server is already running"));
+        }
+
+        // Set initial state
+        self.write_state_atomic(ServerState::Starting).await?;
+        
+        // Write PID file
         self.write_pid().await?;
         
-        // Initialize server state
-        let addr = self.bound_addr.read().await.as_ref()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "0.0.0.0:0".to_string());
+        // Create and bind TCP listener
+        let listener = TcpListener::bind("0.0.0.0:0").await
+            .map_err(|e| NexaError::system(format!("Failed to bind: {}", e)))?;
             
-        let listener = TcpListener::bind(&addr).await
-            .map_err(|e| NexaError::system(format!("Failed to bind to {}: {}", addr, e)))?;
-            
-        // Store the bound address
-        let bound_addr = listener.local_addr()
+        let addr = listener.local_addr()
             .map_err(|e| NexaError::system(format!("Failed to get local address: {}", e)))?;
-        *self.bound_addr.write().await = Some(bound_addr);
+            
+        *self.bound_addr.write().await = Some(addr);
         
-        info!("Server listening on {}", bound_addr);
-        
-        // Update server state
+        info!("Server listening on {}", addr);
         debug!("Setting server state to Starting");
-        *self.state.write().await = ServerState::Starting;
         
-        // Start accepting connections
-        let server = self.clone();
+        // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
         *self.shutdown_tx.lock().await = Some(shutdown_tx);
         
+        let server = self.clone();
+        
+        // Spawn server task
         let handle = tokio::spawn(async move {
-            let mut result = Ok(());
-            'outer: loop {
+            debug!("Waiting for server to be ready");
+            
+            // Set state to Running once initialization is complete
+            server.write_state_atomic(ServerState::Running).await?;
+            
+            debug!("Server is now running");
+            server.ready_notify.notify_waiters();
+            
+            loop {
                 tokio::select! {
-                    accept_result = listener.accept() => {
-                        match accept_result {
-                            Ok((stream, addr)) => {
-                                let server = server.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = Self::handle_connection(stream, addr, server).await {
-                                        error!("Connection error: {}", e);
-                                    }
-                                });
+                    Ok((stream, addr)) = listener.accept() => {
+                        let server = server.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::handle_connection(stream, addr, &server).await {
+                                error!("Connection error: {}", e);
                             }
-                            Err(e) => {
-                                error!("Accept error: {}", e);
-                                if e.kind() == std::io::ErrorKind::WouldBlock {
-                                    tokio::time::sleep(Duration::from_millis(100)).await;
-                                    continue;
-                                }
-                                result = Err(NexaError::system(format!("Accept error: {}", e)));
-                                break 'outer;
-                            }
-                        }
+                        });
                     }
                     _ = shutdown_rx.recv() => {
                         debug!("Received shutdown signal");
-                        break 'outer;
+                        break;
                     }
                 }
             }
-            result
+            
+            Ok(())
         });
         
-        // Store server handle
         *self.server_handle.write().await = Some(handle);
         
         // Wait for server to be ready
         debug!("Waiting for server to be ready");
-        self.write_state_atomic(ServerState::Running).await?;
+        self.ready_notify.notified().await;
         
-        debug!("Final server state after start: {:?}", self.get_state().await);
-        info!("Server started successfully on {}", bound_addr);
+        let final_state = self.get_state().await;
+        debug!("Final server state after start: {:?}", final_state);
         
-        Ok(())
+        if final_state == ServerState::Running {
+            info!("Server started successfully on {}", addr);
+            Ok(())
+        } else {
+            Err(NexaError::system(format!("Server failed to start. Final state: {:?}", final_state)))
+        }
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
@@ -438,9 +420,9 @@ impl Server {
     }
 
     pub async fn get_active_connections(&self) -> usize {
-        self.active_connections.lock()
-            .map(|guard| *guard as usize)
-            .unwrap_or(0)
+        match self.active_connections.read().await {
+            count => *count as usize
+        }
     }
 
     pub async fn get_bound_addr(&self) -> Option<std::net::SocketAddr> {
@@ -448,6 +430,16 @@ impl Server {
     }
 
     pub async fn get_state(&self) -> ServerState {
+        // First check in-memory state
+        let in_memory_state = self.state.read().await.clone();
+        
+        // If server is running or starting, return in-memory state
+        match in_memory_state {
+            ServerState::Running | ServerState::Starting => return in_memory_state,
+            _ => {}
+        }
+        
+        // Otherwise check state file
         if let Ok(metadata) = fs::metadata(&self.pid_file.with_extension("state")).await {
             if metadata.is_file() {
                 if let Ok(content) = fs::read_to_string(&self.pid_file.with_extension("state")).await {
@@ -477,101 +469,60 @@ impl Server {
         Ok(())
     }
 
-    async fn handle_connection(stream: TcpStream, addr: SocketAddr, server: Server) -> Result<(), NexaError> {
+    async fn handle_connection(stream: TcpStream, addr: SocketAddr, server: &Server) -> Result<(), NexaError> {
         // Update connection metrics
         {
             let mut metrics = server.metrics.write().await;
             metrics.total_connections += 1;
             
-            if let Ok(mut count) = server.active_connections.lock() {
-                if *count >= server.max_connections {
-                    metrics.failed_connections += 1;
-                    return Err(NexaError::system("Maximum connections reached"));
-                }
-                *count += 1;
+            let mut count = server.active_connections.write().await;
+            if *count >= server.max_connections {
+                metrics.failed_connections += 1;
+                return Err(NexaError::system("Maximum connections reached"));
             }
+            *count += 1;
+            metrics.active_connections = *count;
         }
-
-        // Register client connection
+        
+        // Add to connected clients
         {
             let mut clients = server.connected_clients.write().await;
             clients.insert(addr, SystemTime::now());
         }
-
-        // Set connection timeout
-        stream.set_nodelay(true)?;
         
-        // Perform WebSocket handshake
-        let ws_stream = tokio_tungstenite::accept_async(stream)
-            .await
+        // Set up WebSocket
+        let ws_stream = tokio_tungstenite::accept_async(stream).await
             .map_err(|e| NexaError::system(format!("WebSocket handshake failed: {}", e)))?;
+            
+        let (write, read) = ws_stream.split();
         
-        debug!("WebSocket connection established with {}", addr);
+        // Handle messages
+        let handle_result = server.handle_websocket(read, write).await;
         
-        let (mut write, mut read) = ws_stream.split();
-        
-        // Handle connection logic here
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(msg) => {
-                    match msg {
-                        Message::Text(text) => {
-                            debug!("Received text message from {}: {}", addr, text);
-                            // Parse and handle the message
-                            let response = serde_json::json!({
-                                "code": 200,
-                                "message": "Message received"
-                            });
-                            write.send(Message::Text(response.to_string()))
-                                .await
-                                .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
-                        }
-                        Message::Close(_) => {
-                            debug!("Client {} initiated close", addr);
-                            break;
-                        }
-                        _ => {
-                            debug!("Received non-text message from {}", addr);
-                            let response = serde_json::json!({
-                                "code": 400,
-                                "message": "Unsupported message type"
-                            });
-                            write.send(Message::Text(response.to_string()))
-                                .await
-                                .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Error receiving message from {}: {}", addr, e);
-                    break;
-                }
-            }
-        }
-
-        // Cleanup on connection end
-        if let Ok(mut count) = server.active_connections.lock() {
+        // Clean up connection
+        {
+            let mut count = server.active_connections.write().await;
             *count = count.saturating_sub(1);
         }
         
-        let mut clients = server.connected_clients.write().await;
-        clients.remove(&addr);
-
-        Ok(())
+        handle_result
     }
 
     pub async fn update_metrics(&self) -> Result<(), NexaError> {
-        let _ = self.metrics.write().await;
+        let mut metrics = self.metrics.write().await;
+        metrics.uptime = SystemTime::now()
+            .duration_since(metrics.start_time)
+            .unwrap_or(Duration::from_secs(0));
+        metrics.active_connections = *self.active_connections.read().await;
         Ok(())
     }
 
     pub async fn get_metrics(&self) -> ServerMetrics {
-        self.update_metrics().await;
+        let _ = self.update_metrics().await;
         self.metrics.read().await.clone()
     }
 
     pub async fn set_max_connections(&mut self, max: u32) {
-        let metrics = self.metrics.write().await;
         self.max_connections = max;
         debug!("Set max connections to {}", max);
     }
@@ -591,14 +542,15 @@ impl Server {
 
         for addr in stale {
             clients.remove(&addr);
-            if let Ok(mut count) = self.active_connections.lock() {
-                *count = count.saturating_sub(1);
-            }
+            let mut count = self.active_connections.write().await;
+            *count = count.saturating_sub(1);
             debug!("Removed stale connection from {}", addr);
         }
     }
 
     async fn start_health_monitor(&self) {
+        // TODO: Implement health monitoring in future release
+        // This method will be used to monitor server health metrics and trigger alerts
         let server = self.clone();
         
         tokio::spawn(async move {
@@ -608,7 +560,7 @@ impl Server {
                 interval.tick().await;
                 
                 // Update metrics
-                server.update_metrics().await;
+                let _ = server.update_metrics().await;
                 
                 // Clean up stale connections
                 server.cleanup_stale_connections().await;
@@ -627,17 +579,16 @@ impl Server {
         });
     }
 
-    async fn check_server_health(&self) -> Result<(), NexaError> {
+    pub async fn check_server_health(&self) -> Result<(), NexaError> {
         // Check if process is still running
         if !(self.check_process_exists().await) {
             return Err(NexaError::system("Server process not running"));
         }
 
         // Check if we can still accept connections
-        if let Ok(count) = self.active_connections.lock() {
-            if *count >= self.max_connections {
-                return Err(NexaError::system("Server at maximum connections"));
-            }
+        let count = self.active_connections.read().await;
+        if *count >= self.max_connections {
+            return Err(NexaError::system("Server at maximum connections"));
         }
 
         // Check uptime and connection stats
@@ -661,6 +612,52 @@ impl Server {
             }
             Err(e) => Err(NexaError::system(format!("Failed to get metadata for {}: {}", state_file.display(), e)))
         }
+    }
+
+    async fn handle_websocket<S>(&self, mut read: SplitStream<WebSocketStream<S>>, mut write: SplitSink<WebSocketStream<S>, Message>) -> Result<(), NexaError> 
+    where S: AsyncRead + AsyncWrite + Unpin {
+        while let Some(msg) = read.next().await {
+            match msg {
+                Ok(msg) => {
+                    match msg {
+                        Message::Text(text) => {
+                            debug!("Received text message: {}", text);
+                            // Parse and handle the message
+                            let response = serde_json::json!({
+                                "code": 200,
+                                "message": "Message received"
+                            });
+                            write.send(Message::Text(response.to_string()))
+                                .await
+                                .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
+                        }
+                        Message::Close(_) => {
+                            debug!("Client initiated close");
+                            break;
+                        }
+                        _ => {
+                            debug!("Received non-text message");
+                            let response = serde_json::json!({
+                                "code": 400,
+                                "message": "Unsupported message type"
+                            });
+                            write.send(Message::Text(response.to_string()))
+                                .await
+                                .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Error receiving message: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn notify_state_change(&self, state: ServerState) {
+        let _ = self.state_change_tx.send(state);
     }
 }
 
@@ -777,7 +774,7 @@ impl ServerControl {
         }
     }
 
-    pub async fn start(&self, addr: Option<&str>) -> Result<(), NexaError> {
+    pub async fn start(&self, _addr: Option<&str>) -> Result<(), NexaError> {
         // Early check: if server task already exists, then server is running
         if self.server_handle.read().await.is_some() {
             error!("Server is already running");
@@ -927,14 +924,16 @@ impl ServerControl {
     
     pub async fn write_state_atomic(&self, state: ServerState) -> Result<(), NexaError> {
         debug!("Writing state atomically: {:?}", state);
-        let state_file = self.server.pid_file.clone();
+        let state_file = self.server.pid_file.with_extension("state");
         let temp_file = state_file.with_extension("tmp");
         
+        // Ensure parent directory exists for both temp and final files
         if let Some(parent) = state_file.parent() {
             tokio::fs::create_dir_all(parent).await
                 .map_err(|e| NexaError::system(format!("Failed to create directory: {}", e)))?;
         }
         
+        // Write state to temporary file
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -949,15 +948,15 @@ impl ServerControl {
         file.sync_all().await
             .map_err(|e| NexaError::system(format!("Failed to sync file: {}", e)))?;
         
-        tokio::fs::rename(temp_file, state_file).await
+        // Rename temp file to state file
+        tokio::fs::rename(&temp_file, &state_file).await
             .map_err(|e| NexaError::system(format!("Failed to rename file: {}", e)))?;
-        
-        // Update in-memory state
+            
+        // Update in-memory state and notify subscribers
         *self.server.state.write().await = state.clone();
+        self.notify_state_change(state.clone()).await;
         
-        // Notify state change subscribers
-        let _ = self.server.state_change_tx.send(state);
-        
+        debug!("Successfully wrote state file: {}", state_file.display());
         Ok(())
     }
 
@@ -966,8 +965,12 @@ impl ServerControl {
         metrics.uptime = SystemTime::now()
             .duration_since(metrics.start_time)
             .unwrap_or(Duration::from_secs(0));
-        metrics.active_connections = *self.server.active_connections.lock().unwrap();
+        metrics.active_connections = *self.server.active_connections.read().await;
         Ok(())
+    }
+
+    async fn notify_state_change(&self, state: ServerState) {
+        let _ = self.server.state_change_tx.send(state);
     }
 }
 
