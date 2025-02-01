@@ -1,4 +1,4 @@
-use nexa_utils::api::ApiDoc;
+use nexa_core::api::ApiDoc;
 use utoipa::OpenApi;
 use serde_json::Value;
 
@@ -119,4 +119,10 @@ fn test_api_endpoints() {
             assert!(!security.is_empty(), "Endpoint missing security requirements");
         }
     }
+}
+
+#[test]
+fn test_api_doc_generation() {
+    let api_doc = ApiDoc::openapi();
+    assert!(!api_doc.to_pretty_json().unwrap().is_empty());
 } 

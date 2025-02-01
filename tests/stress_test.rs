@@ -1,4 +1,4 @@
-use nexa_utils::mcp::{cluster::*, config::*, loadbalancer::*};
+use nexa_core::mcp::{cluster::*, config::*, loadbalancer::*};
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 use tokio::net::TcpListener;
@@ -15,6 +15,8 @@ use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 const TEST_DURATION: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_CONNECTIONS: usize = 1000;

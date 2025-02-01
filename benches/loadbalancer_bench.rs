@@ -1,9 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nexa_utils::mcp::loadbalancer::*;
+use nexa_core::mcp::loadbalancer::*;
 use tokio::runtime::Runtime;
 use std::time::Duration;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use futures::future::join_all;
 
 fn connection_pool_benchmark(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
@@ -24,7 +25,7 @@ fn connection_pool_benchmark(c: &mut Criterion) {
                 );
 
                 // Acquire and release multiple connections
-                let mut handles = Vec::new();
+                let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
                 for _ in 0..10 {
                     if let Ok(conn) = pool.acquire(addr).await {
                         pool.release(addr, conn).await;
@@ -55,7 +56,7 @@ fn connection_pool_benchmark(c: &mut Criterion) {
                     }));
                 }
 
-                futures::future::join_all(handles).await;
+                join_all(handles).await;
             });
         })
     });
@@ -101,11 +102,9 @@ fn load_balancer_benchmark(c: &mut Criterion) {
                     Duration::from_secs(5),
                 );
 
-                let pools = lb.pools.write().await;
-                for (addr, pool) in pools.iter() {
-                    let mut pool = pool.write().await;
-                    let _ = lb.check_pool_health(&mut pool, *addr).await;
-                }
+                // Start health checks and let them run for a short duration
+                lb.start_health_checks().await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             });
         })
     });
