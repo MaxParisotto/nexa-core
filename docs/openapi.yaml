@@ -1,0 +1,184 @@
+openapi: 3.1.0
+info:
+  title: Nexa Utils API
+  version: '1.0.0'
+  description: Multi-agent Control Protocol (MCP) Implementation
+  contact:
+    name: Nexa Utils Team
+    url: https://github.com/yourusername/nexa-utils-v2
+
+servers:
+  - url: ws://localhost:8080
+    description: WebSocket server for local development
+  - url: wss://api.example.com
+    description: Production WebSocket server
+
+tags:
+  - name: Agents
+    description: Agent management operations
+  - name: Tasks
+    description: Task management operations
+  - name: System
+    description: System monitoring and control
+  - name: Metrics
+    description: Resource and performance metrics
+
+paths:
+  /ws:
+    get:
+      summary: WebSocket Connection
+      description: Establish WebSocket connection for real-time communication
+      tags:
+        - System
+      responses:
+        '101':
+          description: WebSocket handshake successful
+        '400':
+          description: Invalid request
+        '500':
+          description: Server error
+
+components:
+  schemas:
+    Agent:
+      type: object
+      required:
+        - id
+        - capabilities
+        - status
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the agent
+        name:
+          type: string
+          description: Human-readable name for the agent
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: List of agent capabilities
+        status:
+          type: string
+          enum: [Idle, Running, Error]
+          description: Current agent status
+
+    Task:
+      type: object
+      required:
+        - id
+        - type
+      properties:
+        id:
+          type: string
+          description: Unique task identifier
+        type:
+          type: string
+          description: Task type (e.g., code_generation, code_review)
+        data:
+          type: object
+          description: Task-specific data
+        deadline:
+          type: string
+          format: date-time
+          description: Optional task deadline
+
+    SystemMetrics:
+      type: object
+      properties:
+        cpu_usage:
+          type: number
+          format: float
+          description: CPU usage percentage
+        memory_usage:
+          type: object
+          properties:
+            total_used:
+              type: integer
+              description: Total memory used in bytes
+            total_allocated:
+              type: integer
+              description: Total memory allocated in bytes
+        active_agents:
+          type: integer
+          description: Number of active agent connections
+        error_count:
+          type: integer
+          description: Number of system errors
+
+  messages:
+    RegisterAgent:
+      payload:
+        type: object
+        required:
+          - type
+          - agent
+        properties:
+          type:
+            type: string
+            enum: [RegisterAgent]
+          agent:
+            $ref: '#/components/schemas/Agent'
+      description: Register a new agent with the system
+
+    TaskAssignment:
+      payload:
+        type: object
+        required:
+          - type
+          - task
+          - agent_id
+        properties:
+          type:
+            type: string
+            enum: [TaskAssignment]
+          task:
+            $ref: '#/components/schemas/Task'
+          agent_id:
+            type: string
+      description: Assign a task to an agent
+
+    StatusUpdate:
+      payload:
+        type: object
+        required:
+          - type
+          - agent_id
+          - status
+        properties:
+          type:
+            type: string
+            enum: [StatusUpdate]
+          agent_id:
+            type: string
+          status:
+            type: string
+            enum: [Idle, Running, Error]
+          metrics:
+            type: object
+            additionalProperties: true
+      description: Update agent status and metrics
+
+    AgentQuery:
+      payload:
+        type: object
+        required:
+          - type
+          - capability
+        properties:
+          type:
+            type: string
+            enum: [AgentQuery]
+          capability:
+            type: string
+      description: Query for agents with specific capabilities
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token for authentication
+
+security:
+  - bearerAuth: [] 

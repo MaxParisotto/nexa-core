@@ -1,0 +1,28 @@
+[env]
+RUST_LOG = "debug"
+RUST_BACKTRACE = "1"
+
+[test]
+harness = true
+
+[target.'cfg(unix)']
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[alias]
+test = "test -- --nocapture --test-threads=1 --show-output"
+
+[build]
+# Default target for cargo build
+target = ["x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-unknown-linux-musl"]
+
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-undefined",
+    "-C", "link-arg=dynamic_lookup",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-undefined",
+    "-C", "link-arg=dynamic_lookup",
+] 
