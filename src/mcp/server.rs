@@ -614,6 +614,7 @@ impl Server {
         }
     }
 
+    #[allow(dead_code)]
     async fn start_health_monitor(&self) {
         // TODO: Implement health monitoring in future release
         // This method will be used to monitor server health metrics and trigger alerts

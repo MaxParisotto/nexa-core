@@ -202,6 +202,7 @@ impl ClusterCoordinator {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn calculate_health_score(&self) -> f64 {
         // TODO: Implement health score calculation in future release
         // This method will calculate a health score based on system metrics
