@@ -1,8 +1,8 @@
-# Nexa Utils
+# Nexa Core
 
 ## Overview
 
-Nexa Utils is a comprehensive Rust-based utility library providing essential tools and functionalities for multi-agent systems, resource management, and monitoring. The project emphasizes reliability, performance, and safety through robust resource tracking and health monitoring.
+Nexa Core is a comprehensive Rust-based utility library providing essential tools and functionalities for multi-agent systems, resource management, and monitoring. The project emphasizes reliability, performance, and safety through robust resource tracking and health monitoring.
 
 ## Key Features
 

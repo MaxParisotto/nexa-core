@@ -16,6 +16,7 @@ use std::time::Duration;
 use std::cmp::min;
 use sysinfo;
 use std::error::Error;
+use crate::config::Config;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -588,6 +589,97 @@ impl CliController {
         
         Ok(())
     }
+
+    async fn handle_config_show(&self) -> Result<String, NexaError> {
+        let config = Config::load(&Config::get_config_path())?;
+        let mut output = String::new();
+        
+        output.push_str("\n🔧 Current Configuration:\n");
+        
+        // Server config
+        output.push_str("\n📡 Server Settings:\n");
+        output.push_str(&format!("  Host: {}\n", config.server.host));
+        output.push_str(&format!("  Port: {}\n", config.server.port));
+        output.push_str(&format!("  Max Connections: {}\n", config.server.max_connections));
+        output.push_str(&format!("  Connection Timeout: {}s\n", config.server.connection_timeout));
+        
+        // Monitoring config
+        output.push_str("\n📊 Monitoring Settings:\n");
+        output.push_str(&format!("  CPU Threshold: {:.1}%\n", config.monitoring.cpu_threshold));
+        output.push_str(&format!("  Memory Threshold: {:.1}%\n", config.monitoring.memory_threshold));
+        output.push_str(&format!("  Health Check Interval: {}s\n", config.monitoring.health_check_interval));
+        output.push_str(&format!("  Detailed Metrics: {}\n", config.monitoring.detailed_metrics));
+        
+        // Logging config
+        output.push_str("\n📝 Logging Settings:\n");
+        output.push_str(&format!("  Level: {}\n", config.logging.level));
+        output.push_str(&format!("  File: {}\n", config.logging.file));
+        output.push_str(&format!("  Max Size: {}MB\n", config.logging.max_size));
+        output.push_str(&format!("  Files to Keep: {}\n", config.logging.files_to_keep));
+        
+        Ok(output)
+    }
+
+    async fn handle_config_set(&self, key: &str, value: &str) -> Result<(), NexaError> {
+        let config_path = Config::get_config_path();
+        let mut config = Config::load(&config_path)?;
+        
+        // Parse the key path (e.g., "server.host" or "monitoring.cpu_threshold")
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() != 2 {
+            return Err(NexaError::config("Invalid key format. Use section.key (e.g., server.host)"));
+        }
+        
+        match (parts[0], parts[1]) {
+            // Server settings
+            ("server", "host") => config.server.host = value.to_string(),
+            ("server", "port") => config.server.port = value.parse()
+                .map_err(|_| NexaError::config("Invalid port number"))?,
+            ("server", "max_connections") => config.server.max_connections = value.parse()
+                .map_err(|_| NexaError::config("Invalid max connections value"))?,
+            ("server", "connection_timeout") => config.server.connection_timeout = value.parse()
+                .map_err(|_| NexaError::config("Invalid connection timeout value"))?,
+            
+            // Monitoring settings
+            ("monitoring", "cpu_threshold") => config.monitoring.cpu_threshold = value.parse()
+                .map_err(|_| NexaError::config("Invalid CPU threshold value"))?,
+            ("monitoring", "memory_threshold") => config.monitoring.memory_threshold = value.parse()
+                .map_err(|_| NexaError::config("Invalid memory threshold value"))?,
+            ("monitoring", "health_check_interval") => config.monitoring.health_check_interval = value.parse()
+                .map_err(|_| NexaError::config("Invalid health check interval value"))?,
+            ("monitoring", "detailed_metrics") => config.monitoring.detailed_metrics = value.parse()
+                .map_err(|_| NexaError::config("Invalid detailed metrics value (use true/false)"))?,
+            
+            // Logging settings
+            ("logging", "level") => {
+                match value.to_lowercase().as_str() {
+                    "trace" | "debug" | "info" | "warn" | "error" => config.logging.level = value.to_lowercase(),
+                    _ => return Err(NexaError::config("Invalid log level (use trace/debug/info/warn/error)")),
+                }
+            }
+            ("logging", "file") => config.logging.file = value.to_string(),
+            ("logging", "max_size") => config.logging.max_size = value.parse()
+                .map_err(|_| NexaError::config("Invalid max log size value"))?,
+            ("logging", "files_to_keep") => config.logging.files_to_keep = value.parse()
+                .map_err(|_| NexaError::config("Invalid files to keep value"))?,
+            
+            _ => return Err(NexaError::config("Invalid configuration key")),
+        }
+        
+        // Save updated configuration
+        config.save(&config_path)?;
+        info!("Configuration updated successfully");
+        
+        Ok(())
+    }
+
+    async fn handle_config_reset(&self) -> Result<(), NexaError> {
+        let config_path = Config::get_config_path();
+        let config = Config::reset();
+        config.save(&config_path)?;
+        info!("Configuration reset to defaults");
+        Ok(())
+    }
 }
 
 impl Clone for CliController {
@@ -628,17 +720,18 @@ impl CliController {
                 match cmd {
                     ConfigCommands::Show => {
                         info!("Showing current configuration");
-                        // Implementation needed
+                        let config = self.handle_config_show().await?;
+                        println!("{}", config);
                         Ok(())
                     }
                     ConfigCommands::Set { key, value } => {
                         info!("Setting configuration value");
-                        // Implementation needed
+                        self.handle_config_set(&key, &value).await?;
                         Ok(())
                     }
                     ConfigCommands::Reset => {
                         info!("Resetting configuration to defaults");
-                        // Implementation needed
+                        self.handle_config_reset().await?;
                         Ok(())
                     }
                 }

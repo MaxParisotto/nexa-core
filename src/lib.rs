@@ -10,6 +10,7 @@ pub mod agent_types;
 pub mod memory;
 pub mod tokens;
 pub mod utils;
+pub mod config;
 
 // Re-export commonly used types
 pub use agent::{Agent, AgentStatus, Task, TaskStatus};
@@ -19,6 +20,7 @@ pub use monitoring::{
     MonitoringSystem, SystemMetrics, SystemAlert, AlertLevel,
     SystemHealth, SystemStatus
 };
+pub use config::Config;
 
 #[cfg(test)]
 mod tests {
