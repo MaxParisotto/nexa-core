@@ -428,11 +428,7 @@ impl CliController {
             Commands::Start { port, host } => {
                 info!("Starting Nexa Core server on {}:{}", host, port);
                 // Create a basic config string with the port and host
-                let config = format!(r#"
-                    server:
-                      host: "{}"
-                      port: {}
-                "#, host, port);
+                let config = format!("{}:{}", host, port);
                 self.handle_start(&Some(config)).await?;
                 Ok(())
             }
