@@ -19,23 +19,15 @@ Nexa Utils is a powerful Multi-agent Control Protocol (MCP) implementation that 
 
 ### Prerequisites
 
-- Rust 1.70 or higher
-- Cargo package manager
-- 4GB RAM minimum
-- Linux/macOS/Windows support
+- Rust (>=1.70)
+- Cargo
 
 ### Building from Source
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/nexa-utils-v2
-cd nexa-utils-v2
-
-# Build release version
+git clone https://github.com/actualusername/nexa-utils.git
+cd nexa-utils
 cargo build --release
-
-# Run tests
-cargo test
 ```
 
 ## Getting Started

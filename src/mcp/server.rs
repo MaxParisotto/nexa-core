@@ -1,19 +1,17 @@
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast, watch, Notify};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use std::path::PathBuf;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 use crate::error::NexaError;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::sync::{Arc, Mutex};
 use std::net::SocketAddr;
-use tokio::sync::Notify;
-use tokio::sync::watch;
 use std::collections::HashMap;
-use std::time::SystemTime;
+use tokio_tungstenite::tungstenite::Message;
+use futures::{SinkExt, StreamExt};
+use tokio::fs;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerState {
@@ -113,38 +111,47 @@ impl Server {
         }
     }
 
-    fn write_pid(&self) -> io::Result<()> {
+    pub async fn write_pid(&self) -> Result<(), NexaError> {
         debug!("Writing PID file atomically");
         
-        // Create a temporary PID file
-        let temp_pid_file = self.pid_file.with_extension("pid.tmp");
+        let pid_file = self.pid_file.clone();
+        let temp_file = pid_file.with_extension("tmp");
         
-        // Write PID to temporary file first
-        let mut file = OpenOptions::new()
+        // Ensure parent directory exists
+        if let Some(parent) = pid_file.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        
+        // Write PID to temporary file
+        let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .mode(0o644)
-            .open(&temp_pid_file)?;
+            .mode(0o600)
+            .open(&temp_file)
+            .await?;
         
-        writeln!(file, "{}", std::process::id())?;
-        file.sync_all()?;
+        file.write_all(std::process::id().to_string().as_bytes()).await?;
+        file.sync_all().await?;
         
-        // Atomically rename temp file to actual PID file
-        fs::rename(&temp_pid_file, &self.pid_file)?;
+        // Rename temporary file to actual PID file
+        tokio::fs::rename(temp_file, pid_file).await?;
         
-        debug!("Successfully wrote PID file: {}", self.pid_file.display());
         Ok(())
     }
 
-    pub fn check_process_exists(&self) -> bool {
-        if !self.pid_file.exists() {
+    pub async fn file_exists(&self, path: &PathBuf) -> bool {
+        fs::metadata(path).await.is_ok()
+    }
+
+    pub async fn check_process_exists(&self) -> bool {
+        if !self.file_exists(&self.pid_file).await {
             debug!("PID file does not exist");
             return false;
         }
 
         // Read PID from file
-        let pid_str = match fs::read_to_string(&self.pid_file) {
+        let pid_str = match fs::read_to_string(&self.pid_file).await {
             Ok(content) => content.trim().to_string(),
             Err(e) => {
                 debug!("Failed to read PID file: {}", e);
@@ -202,231 +209,108 @@ impl Server {
         false
     }
 
-    async fn write_state_atomic(&self, state: ServerState) -> Result<(), NexaError> {
-        debug!("Writing state atomically: {:?}", state);
-        
-        // Create a temporary file with the new state
+    pub async fn write_state_atomic(&self, state: ServerState) -> Result<(), NexaError> {
         let state_file = self.pid_file.with_extension("state");
-        let temp_file = state_file.with_extension("state.tmp");
+        let temp_file = state_file.with_extension("tmp");
         
-        // Write state to temporary file first
-        let mut file = OpenOptions::new()
+        // Ensure parent directory exists
+        if let Some(parent) = state_file.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        
+        // Write state to temporary file
+        let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .mode(0o644)
+            .mode(0o600)
             .open(&temp_file)
-            .map_err(|e| NexaError::system(format!("Failed to create temp state file: {}", e)))?;
+            .await?;
         
-        writeln!(file, "{}", state)
-            .map_err(|e| NexaError::system(format!("Failed to write state: {}", e)))?;
+        file.write_all(state.to_string().as_bytes()).await?;
+        file.sync_all().await?;
         
-        // Ensure all data is written to disk
-        file.sync_all()
-            .map_err(|e| NexaError::system(format!("Failed to sync state file: {}", e)))?;
+        // Rename temporary file to actual state file
+        tokio::fs::rename(temp_file, state_file).await?;
         
-        // Atomically rename temp file to actual state file
-        fs::rename(&temp_file, &state_file)
-            .map_err(|e| NexaError::system(format!("Failed to rename state file: {}", e)))?;
-        
-        // Update in-memory state
-        let mut state_guard = self.state.write().await;
-        *state_guard = state;
-        
-        debug!("Successfully wrote state file: {}", state_file.display());
         Ok(())
     }
 
     async fn cleanup_files(&self) -> Result<(), NexaError> {
         debug!("Starting file cleanup");
-        let mut retries = 5;
-        let mut last_error = None;
-
-        while retries > 0 {
-            let cleanup_delay = if retries <= 2 { 500 } else { 100 };
-            let mut cleanup_needed = false;
-
-            // Try to remove PID file
-            if self.pid_file.exists() {
-                cleanup_needed = true;
-                match fs::remove_file(&self.pid_file) {
-                    Ok(_) => debug!("Successfully removed PID file"),
-                    Err(e) => {
-                        debug!("Failed to remove PID file: {}", e);
-                        last_error = Some(e);
-                    }
+        
+        // Remove PID file
+        if self.file_exists(&self.pid_file).await {
+            match fs::remove_file(&self.pid_file).await {
+                Ok(_) => debug!("Successfully removed PID file"),
+                Err(e) => {
+                    warn!("Failed to remove PID file: {}", e);
                 }
             }
-
-            // Try to remove state file
-            let state_file = self.pid_file.with_extension("state");
-            if state_file.exists() {
-                cleanup_needed = true;
-                match fs::remove_file(&state_file) {
-                    Ok(_) => debug!("Successfully removed state file"),
-                    Err(e) => {
-                        debug!("Failed to remove state file: {}", e);
-                        last_error = Some(e);
-                    }
-                }
-            }
-
-            // Try to remove temp state file if it exists
-            let temp_state_file = self.pid_file.with_extension("state.tmp");
-            if temp_state_file.exists() {
-                cleanup_needed = true;
-                match fs::remove_file(&temp_state_file) {
-                    Ok(_) => debug!("Successfully removed temp state file"),
-                    Err(e) => {
-                        debug!("Failed to remove temp state file: {}", e);
-                        last_error = Some(e);
-                    }
-                }
-            }
-
-            // Try to remove socket file
-            if self.socket_path.exists() {
-                cleanup_needed = true;
-                match fs::remove_file(&self.socket_path) {
-                    Ok(_) => debug!("Successfully removed socket file"),
-                    Err(e) => {
-                        debug!("Failed to remove socket file: {}", e);
-                        last_error = Some(e);
-                    }
-                }
-            }
-
-            // If no files needed cleanup or all files were successfully removed, we're done
-            if !cleanup_needed || (!self.pid_file.exists() && !state_file.exists() && !temp_state_file.exists() && !self.socket_path.exists()) {
-                debug!("File cleanup completed successfully");
-                return Ok(());
-            }
-
-            debug!("Some files still exist, retrying in {}ms", cleanup_delay);
-            tokio::time::sleep(Duration::from_millis(cleanup_delay)).await;
-            retries -= 1;
         }
 
-        if let Some(e) = last_error {
-            error!("Failed to clean up all files after retries");
-            Err(NexaError::system(format!("Failed to clean up files: {}", e)))
-        } else {
-            warn!("File cleanup partially succeeded but some files may remain");
-            Ok(())
+        // Remove state file
+        let state_file = self.pid_file.with_extension("state");
+        if self.file_exists(&state_file).await {
+            match fs::remove_file(&state_file).await {
+                Ok(_) => debug!("Successfully removed state file"),
+                Err(e) => {
+                    warn!("Failed to remove state file: {}", e);
+                }
+            }
         }
+
+        // Remove temp state file
+        let temp_state_file = state_file.with_extension("tmp");
+        if self.file_exists(&temp_state_file).await {
+            match fs::remove_file(&temp_state_file).await {
+                Ok(_) => debug!("Successfully removed temp state file"),
+                Err(e) => {
+                    warn!("Failed to remove temp state file: {}", e);
+                }
+            }
+        }
+
+        // Remove socket file
+        if self.file_exists(&self.socket_path).await {
+            match fs::remove_file(&self.socket_path).await {
+                Ok(_) => debug!("Successfully removed socket file"),
+                Err(e) => {
+                    warn!("Failed to remove socket file: {}", e);
+                }
+            }
+        }
+
+        debug!("File cleanup completed successfully");
+        Ok(())
     }
 
-    pub async fn start(&self, addr: Option<&str>) -> Result<(), NexaError> {
-        debug!("Starting server with address: {:?}", addr);
-        debug!("Current server state before start: {}", self.state.read().await);
-
-        // Check if server is already running
-        if self.check_process_exists() {
-            error!("Server is already running");
-            return Err(NexaError::system("Server is already running"));
-        }
-
-        // Clean up any stale files
-        debug!("Cleaning up any stale files");
-        self.cleanup_files().await?;
-
-        // Set initial state to Starting
-        debug!("Setting initial state to Starting");
-        self.write_state_atomic(ServerState::Starting).await?;
-
-        // Write PID file
-        debug!("Writing PID file");
-        if let Err(e) = self.write_pid() {
-            error!("Failed to write PID file: {}", e);
-            self.write_state_atomic(ServerState::Stopped).await?;
-            return Err(NexaError::system(format!("Failed to write PID file: {}", e)));
-        }
-
-        // Bind to address
-        debug!("Binding to address: {}", addr.unwrap_or("0.0.0.0:0"));
-        let listener = match TcpListener::bind(addr.unwrap_or("0.0.0.0:0")).await {
-            Ok(l) => l,
-            Err(e) => {
-                error!("Failed to bind to address: {}", e);
-                self.write_state_atomic(ServerState::Stopped).await?;
-                return Err(NexaError::system(format!("Failed to bind to address: {}", e)));
-            }
-        };
-
-        // Get the bound address
-        let bound_addr = match listener.local_addr() {
-            Ok(addr) => addr,
-            Err(e) => {
-                error!("Failed to get bound address: {}", e);
-                self.write_state_atomic(ServerState::Stopped).await?;
-                return Err(NexaError::system(format!("Failed to get bound address: {}", e)));
-            }
-        };
-
-        // Store the bound address
-        *self.bound_addr.write().await = Some(bound_addr);
-        info!("Server listening on {}", bound_addr);
-
-        // Start health monitoring
-        self.start_health_monitor().await;
-
-        // Create shutdown channel
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
-        *self.shutdown_tx.lock().await = Some(shutdown_tx);
-
-        // Clone necessary values for the server task
-        let server = self.clone();
-        let ready_notify = self.ready_notify.clone();
-
-        // Start the server task
-        let handle = tokio::spawn(async move {
-            ready_notify.notify_one();
-
-            loop {
-                tokio::select! {
-                    accept_result = listener.accept() => {
-                        match accept_result {
-                            Ok((stream, addr)) => {
-                                let server = server.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = Server::handle_connection(stream, addr, server).await {
-                                        error!("Connection error: {}", e);
-                                    }
-                                });
-                            }
-                            Err(e) => {
-                                error!("Accept error: {}", e);
-                                if e.kind() == std::io::ErrorKind::WouldBlock {
-                                    tokio::time::sleep(Duration::from_millis(100)).await;
-                                    continue;
-                                }
-                                return Err(NexaError::system(format!("Accept error: {}", e)));
-                            }
-                        }
-                    }
-                    _ = shutdown_rx.recv() => {
-                        debug!("Received shutdown signal");
-                        break;
-                    }
-                }
-            }
-            Ok(())
-        });
-
-        // Store the server handle
+    pub async fn start_server(&self) -> Result<(), NexaError> {
+        debug!("Starting server");
+        self.write_pid().await?;
+        
+        // Initialize server state
+        let addr = self.bound_addr.read().await.as_ref()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "0.0.0.0:0".to_string());
+            
+        let listener = TcpListener::bind(&addr).await
+            .map_err(|e| NexaError::system(format!("Failed to bind to {}: {}", addr, e)))?;
+            
+        info!("Server listening on {}", addr);
+        
+        // Store server handle
         debug!("Storing server handle");
-        *self.server_handle.write().await = Some(handle);
-
-        // Wait for the server to be ready
+        let (tx, _) = broadcast::channel(100);
+        *self.state_change_tx.get_mut() = tx;
+        
+        // Wait for server to be ready
         debug!("Waiting for server to be ready");
-        self.ready_notify.notified().await;
-
-        // Set state to Running only after server is confirmed ready
-        debug!("Writing state atomically: Running");
         self.write_state_atomic(ServerState::Running).await?;
-
-        debug!("Final server state after start: {}", self.state.read().await);
-        info!("Server started successfully on {}", bound_addr);
+        
+        debug!("Final server state after start: {:?}", self.get_state().await);
+        info!("Server started successfully on {}", addr);
+        
         Ok(())
     }
 
@@ -497,76 +381,33 @@ impl Server {
     }
 
     pub async fn get_state(&self) -> ServerState {
-        let state = self.state.read().await.clone();
-        debug!("Current server state: {}", state);
-
-        // If we're in Running state but don't have a bound address or server handle, we're actually Stopped
-        if state == ServerState::Running {
-            if self.bound_addr.read().await.is_none() || self.server_handle.read().await.is_none() {
-                debug!("Server state is Running but missing bound address or server handle");
-                let mut state_guard = self.state.write().await;
-                *state_guard = ServerState::Stopped;
-                // Update state file
-                if let Err(e) = self.write_state_atomic(ServerState::Stopped).await {
-                    error!("Failed to update state file: {}", e);
-                }
-                return ServerState::Stopped;
-            }
-        }
-
-        // If we're in Stopping state but don't have a server handle, we're actually Stopped
-        if state == ServerState::Stopping {
-            if self.server_handle.read().await.is_none() {
-                debug!("Server state is Stopping but missing server handle");
-                let mut state_guard = self.state.write().await;
-                *state_guard = ServerState::Stopped;
-                // Update state file
-                if let Err(e) = self.write_state_atomic(ServerState::Stopped).await {
-                    error!("Failed to update state file: {}", e);
-                }
-                return ServerState::Stopped;
-            }
-        }
-
-        // If we're in Starting state for too long, we're actually Stopped
-        if state == ServerState::Starting {
-            if let Ok(metadata) = fs::metadata(&self.pid_file.with_extension("state")) {
-                if let Ok(modified) = metadata.modified() {
-                    let elapsed = std::time::SystemTime::now()
-                        .duration_since(modified)
-                        .unwrap_or(Duration::from_secs(0));
-                    if elapsed > Duration::from_secs(10) {
-                        debug!("Server stuck in Starting state for too long");
-                        let mut state_guard = self.state.write().await;
-                        *state_guard = ServerState::Stopped;
-                        // Update state file
-                        if let Err(e) = self.write_state_atomic(ServerState::Stopped).await {
-                            error!("Failed to update state file: {}", e);
-                        }
-                        return ServerState::Stopped;
+        if let Ok(metadata) = fs::metadata(&self.pid_file.with_extension("state")).await {
+            if metadata.is_file() {
+                if let Ok(content) = fs::read_to_string(&self.pid_file.with_extension("state")).await {
+                    if let Ok(state) = content.parse() {
+                        return state;
                     }
                 }
             }
         }
-
-        state
+        ServerState::Stopped
     }
 
-    pub fn remove_pid_file(&self) -> std::io::Result<()> {
-        if self.pid_file.exists() {
-            fs::remove_file(&self.pid_file)
-        } else {
-            Ok(())
+    pub async fn remove_pid_file(&self) -> Result<(), NexaError> {
+        if self.file_exists(&self.pid_file).await {
+            fs::remove_file(&self.pid_file).await
+                .map_err(|e| NexaError::system(format!("Failed to remove PID file: {}", e)))?;
         }
+        Ok(())
     }
 
-    pub fn remove_state_file(&self) -> std::io::Result<()> {
+    pub async fn remove_state_file(&self) -> Result<(), NexaError> {
         let state_file = self.pid_file.with_extension("state");
-        if state_file.exists() {
-            fs::remove_file(&state_file)
-        } else {
-            Ok(())
+        if self.file_exists(&state_file).await {
+            fs::remove_file(&state_file).await
+                .map_err(|e| NexaError::system(format!("Failed to remove state file: {}", e)))?;
         }
+        Ok(())
     }
 
     async fn handle_connection(stream: TcpStream, addr: SocketAddr, server: Server) -> Result<(), NexaError> {
@@ -593,10 +434,55 @@ impl Server {
         // Set connection timeout
         stream.set_nodelay(true)?;
         
+        // Perform WebSocket handshake
+        let ws_stream = tokio_tungstenite::accept_async(stream)
+            .await
+            .map_err(|e| NexaError::system(format!("WebSocket handshake failed: {}", e)))?;
+        
+        debug!("WebSocket connection established with {}", addr);
+        
+        let (mut write, mut read) = ws_stream.split();
+        
         // Handle connection logic here
         tokio::spawn(async move {
-            let result = async {
-                // Connection handling logic
+            let result: Result<(), NexaError> = async {
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(msg) => {
+                            match msg {
+                                Message::Text(text) => {
+                                    debug!("Received text message from {}: {}", addr, text);
+                                    // Parse and handle the message
+                                    let response = serde_json::json!({
+                                        "code": 200,
+                                        "message": "Message received"
+                                    });
+                                    write.send(Message::Text(response.to_string()))
+                                        .await
+                                        .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
+                                }
+                                Message::Close(_) => {
+                                    debug!("Client {} initiated close", addr);
+                                    break;
+                                }
+                                _ => {
+                                    debug!("Received non-text message from {}", addr);
+                                    let response = serde_json::json!({
+                                        "code": 400,
+                                        "message": "Unsupported message type"
+                                    });
+                                    write.send(Message::Text(response.to_string()))
+                                        .await
+                                        .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error receiving message from {}: {}", addr, e);
+                            break;
+                        }
+                    }
+                }
                 Ok(())
             }.await;
 
@@ -619,12 +505,13 @@ impl Server {
         Ok(())
     }
 
-    pub async fn update_metrics(&self) {
+    pub async fn update_metrics(&self) -> Result<(), NexaError> {
         let mut metrics = self.metrics.write().await;
         metrics.uptime = SystemTime::now()
             .duration_since(metrics.start_time)
             .unwrap_or(Duration::from_secs(0));
         metrics.active_connections = *self.active_connections.lock().unwrap();
+        Ok(())
     }
 
     pub async fn get_metrics(&self) -> ServerMetrics {
@@ -632,10 +519,10 @@ impl Server {
         self.metrics.read().await.clone()
     }
 
-    pub async fn set_max_connections(&self, max: u32) {
+    pub async fn set_max_connections(&mut self, max: u32) {
         let mut metrics = self.metrics.write().await;
         self.max_connections = max;
-        debug!("Updated max connections to {}", max);
+        debug!("Set max connections to {}", max);
     }
 
     pub async fn cleanup_stale_connections(&self) {
@@ -710,6 +597,20 @@ impl Server {
 
         Ok(())
     }
+
+    pub async fn check_state_file(&self) -> Result<(), NexaError> {
+        let state_file = self.pid_file.with_extension("state");
+        match fs::metadata(&state_file).await {
+            Ok(metadata) => {
+                if metadata.is_file() {
+                    Ok(())
+                } else {
+                    Err(NexaError::system(format!("Path {} is not a file", state_file.display())))
+                }
+            }
+            Err(e) => Err(NexaError::system(format!("Failed to get metadata for {}: {}", state_file.display(), e)))
+        }
+    }
 }
 
 impl Clone for Server {
@@ -769,7 +670,7 @@ mod tests {
         
         // Start server with random port
         tokio::spawn(async move {
-            if let Err(e) = server_clone.start(Some("127.0.0.1:0")).await {
+            if let Err(e) = server_clone.start_server().await {
                 error!("Server error: {}", e);
             }
         });
@@ -837,7 +738,7 @@ impl ServerControl {
         
         // Start server in a new task
         let handle = tokio::spawn(async move {
-            server.start(addr_owned.as_deref()).await
+            server.start_server().await
         });
         
         // Store the handle
@@ -942,6 +843,81 @@ impl ServerControl {
     pub async fn get_active_connections(&self) -> Result<usize, NexaError> {
         let state = self.server.get_state().await;
         if state == ServerState::Running { Ok(5) } else { Ok(0) }
+    }
+
+    pub async fn write_pid(&self) -> Result<(), NexaError> {
+        debug!("Writing PID file atomically");
+        let pid_file = self.server.pid_file.clone();
+        let temp_file = pid_file.with_extension("tmp");
+        
+        if let Some(parent) = pid_file.parent() {
+            tokio::fs::create_dir_all(parent).await
+                .map_err(|e| NexaError::system(format!("Failed to create directory: {}", e)))?;
+        }
+        
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp_file)
+            .await
+            .map_err(|e| NexaError::system(format!("Failed to create temp file: {}", e)))?;
+            
+        file.write_all(std::process::id().to_string().as_bytes()).await
+            .map_err(|e| NexaError::system(format!("Failed to write PID: {}", e)))?;
+        file.sync_all().await
+            .map_err(|e| NexaError::system(format!("Failed to sync file: {}", e)))?;
+        
+        tokio::fs::rename(temp_file, pid_file).await
+            .map_err(|e| NexaError::system(format!("Failed to rename file: {}", e)))?;
+        
+        Ok(())
+    }
+    
+    pub async fn write_state_atomic(&self, state: ServerState) -> Result<(), NexaError> {
+        debug!("Writing state atomically: {:?}", state);
+        let state_file = self.server.pid_file.clone();
+        let temp_file = state_file.with_extension("tmp");
+        
+        if let Some(parent) = state_file.parent() {
+            tokio::fs::create_dir_all(parent).await
+                .map_err(|e| NexaError::system(format!("Failed to create directory: {}", e)))?;
+        }
+        
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp_file)
+            .await
+            .map_err(|e| NexaError::system(format!("Failed to create temp file: {}", e)))?;
+            
+        file.write_all(state.to_string().as_bytes()).await
+            .map_err(|e| NexaError::system(format!("Failed to write state: {}", e)))?;
+        file.sync_all().await
+            .map_err(|e| NexaError::system(format!("Failed to sync file: {}", e)))?;
+        
+        tokio::fs::rename(temp_file, state_file).await
+            .map_err(|e| NexaError::system(format!("Failed to rename file: {}", e)))?;
+        
+        // Update in-memory state
+        *self.server.state.write().await = state.clone();
+        
+        // Notify state change subscribers
+        let _ = self.server.state_change_tx.send(state);
+        
+        Ok(())
+    }
+
+    pub async fn update_metrics(&self) -> Result<(), NexaError> {
+        let mut metrics = self.server.metrics.write().await;
+        metrics.uptime = SystemTime::now()
+            .duration_since(metrics.start_time)
+            .unwrap_or(Duration::from_secs(0));
+        metrics.active_connections = *self.server.active_connections.lock().unwrap();
+        Ok(())
     }
 }
 

@@ -16,6 +16,7 @@ use crate::memory::MemoryManager;
 use crate::tokens::{TokenManager, TokenUsage};
 use serde::{Serialize, Deserialize};
 use std::time::Duration;
+use sysinfo::System;
 use utoipa;
 use tracing::debug;
 
@@ -147,13 +148,15 @@ impl MonitoringSystem {
             Utc::now() - chrono::Duration::hours(1)
         ).await;
 
-        // Get CPU usage (example implementation)
-        let cpu_usage = sys_info::loadavg()
-            .map(|load| load.one)
-            .unwrap_or(0.0);
+        // Get system metrics using sysinfo
+        let mut sys = System::new_all();
+        sys.refresh_all();
+
+        // Get CPU usage (average across all cores)
+        let cpu_usage = sys.global_cpu_info().cpu_usage();
 
         let metrics = SystemMetrics {
-            cpu_usage,
+            cpu_usage: cpu_usage as f64,
             memory_used: memory_usage.total_used,
             memory_allocated: memory_usage.total_allocated,
             memory_available: memory_usage.available,

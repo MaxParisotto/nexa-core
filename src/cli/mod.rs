@@ -18,6 +18,7 @@ use nix::unistd::Pid;
 use std::time::Duration;
 use std::cmp::min;
 use std::fs;
+use sysinfo;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -331,26 +332,34 @@ impl CliController {
         info!("Getting system status");
         
         let mut output = String::new();
-        output.push_str("\nServer Status:\n");
+        output.push_str("\nSystem Status:\n");
+        
+        // Always show resource usage
+        let sys = sysinfo::System::new_all();
+        output.push_str("\nResource Usage:\n");
+        output.push_str(&format!("  CPU: {:.1}%\n", sys.global_cpu_info().cpu_usage()));
+        output.push_str(&format!("  Memory: {:.1}%\n", 
+            (sys.used_memory() as f64 / sys.total_memory() as f64) * 100.0));
         
         if self.is_server_running() {
-            output.push_str("  State: 🟢 Running\n\n");
+            output.push_str("\nServer Status: 🟢 Running\n");
             
-            // Get additional status info
-            if let Ok(health) = self.server_control.check_health().await {
-                output.push_str(&format!("System Health: {}\n", health.message));
-            }
-            
-            if let Ok(addr) = self.server_control.get_bound_addr().await {
-                output.push_str(&format!("Listening on: {}\n", addr));
-            }
-            
+            // Get metrics
             if let Ok(metrics) = self.server_control.get_metrics().await {
                 output.push_str(&format!("\nActive Connections: {}\n", metrics.active_agents));
             }
+            
+            // Get additional status info
+            if let Ok(health) = self.server_control.check_health().await {
+                output.push_str(&format!("\nSystem Health: {}\n", health.message));
+            }
+            
+            if let Ok(addr) = self.server_control.get_bound_addr().await {
+                output.push_str(&format!("\nListening on: {}\n", addr));
+            }
         } else {
-            output.push_str("  State: 🔴 Stopped\n\n");
-            output.push_str("Server is not running. Start it with 'nexa start'\n");
+            output.push_str("\nServer Status: 🔴 Stopped\n");
+            output.push_str("\nServer is not running. Start it with 'nexa start'\n");
         }
         
         Ok(output)

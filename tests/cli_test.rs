@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use serde_json;
 use std::path::PathBuf;
 use uuid::Uuid;
+use std::future::Future;
 
 static TRACING: OnceCell<()> = OnceCell::new();
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(9000);
@@ -29,18 +30,37 @@ fn setup_logging() {
 }
 
 fn get_next_test_port() -> u16 {
-    PORT_COUNTER.fetch_add(1, Ordering::SeqCst)
+    // Start from a random port in the dynamic range (49152-65535)
+    static START_PORT: AtomicU16 = AtomicU16::new(49152);
+    START_PORT.fetch_add(1, Ordering::SeqCst)
+}
+
+async fn find_available_port() -> Option<u16> {
+    for _ in 0..100 {  // Try up to 100 times
+        let port = get_next_test_port();
+        let addr = format!("127.0.0.1:{}", port);
+        if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
+            drop(listener);
+            return Some(port);
+        }
+    }
+    None
 }
 
 fn get_test_paths() -> (PathBuf, PathBuf, PathBuf) {
-    let runtime_dir = std::env::var("TMPDIR")
-        .map(|dir| dir.trim_end_matches('/').to_string())
-        .unwrap_or_else(|_| "/tmp".to_string());
-    let runtime_dir = PathBuf::from(runtime_dir);
+    let runtime_dir = std::env::temp_dir();
     let test_id = Uuid::new_v4();
-    let pid_file = runtime_dir.join(format!("nexa-test-{}.pid", test_id));
-    let socket_path = runtime_dir.join(format!("nexa-test-{}.sock", test_id));
-    let state_file = pid_file.with_extension("state");
+    let base_name = format!("nexa-test-{}", test_id);
+    
+    let pid_file = runtime_dir.join(format!("{}.pid", base_name));
+    let socket_path = runtime_dir.join(format!("{}.sock", base_name));
+    let state_file = runtime_dir.join(format!("{}.state", base_name));
+    
+    // Create parent directories if they don't exist
+    if let Some(parent) = pid_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    
     (pid_file, socket_path, state_file)
 }
 
@@ -91,7 +111,7 @@ async fn wait_for_server_stop(cli: &CliController) -> Result<(), NexaError> {
 #[allow(dead_code)]
 async fn cleanup_server(controller: &CliController) -> Result<(), NexaError> {
     let _ = controller.handle_stop().await;
-    let _ = controller.cleanup_files().await;
+    let _ = controller.cleanup_files();
     Ok(())
 }
 
@@ -99,7 +119,10 @@ async fn setup_test() -> Result<(CliController, String), NexaError> {
     setup_logging();
     
     let (pid_file, socket_path, state_file) = get_test_paths();
-    let port = get_next_test_port();
+    
+    // Find an available port
+    let port = find_available_port().await
+        .ok_or_else(|| NexaError::system("Could not find available port"))?;
     let addr = format!("127.0.0.1:{}", port);
     
     // Clean up any existing files
@@ -113,19 +136,23 @@ async fn setup_test() -> Result<(CliController, String), NexaError> {
 
 async fn setup() {
     // Clean up any stale files before starting tests
-    let _ = std::fs::remove_file("/tmp/nexa.pid");
-    let _ = std::fs::remove_file("/tmp/nexa.sock");
-    let _ = std::fs::remove_file("/tmp/nexa.state");
+    let temp_dir = std::env::temp_dir();
+    let _ = std::fs::remove_dir_all(temp_dir.join("nexa-test-*"));
+    
+    // Reset port counter to avoid conflicts
+    PORT_COUNTER.store(9000, Ordering::SeqCst);
+    
+    // Give the OS time to release resources
+    sleep(Duration::from_millis(100)).await;
 }
 
 async fn teardown() {
-    // Clean up after tests
-    let _ = std::fs::remove_file("/tmp/nexa.pid");
-    let _ = std::fs::remove_file("/tmp/nexa.sock");
-    let _ = std::fs::remove_file("/tmp/nexa.state");
+    // Clean up test files
+    let temp_dir = std::env::temp_dir();
+    let _ = std::fs::remove_dir_all(temp_dir.join("nexa-test-*"));
     
-    // Give the OS time to release the socket
-    sleep(Duration::from_millis(100)).await;
+    // Give the OS time to release resources
+    sleep(Duration::from_millis(500)).await;
 }
 
 #[tokio::test]
@@ -136,6 +163,10 @@ async fn test_cli_functionality() {
     // Test implementation
     let result = async {
         let (cli, addr) = setup_test().await?;
+        
+        // Start the server first
+        cli.handle_start(&Some(addr.clone())).await?;
+        wait_for_server_start(&cli).await?;
         
         info!("Testing status command");
         let status = cli.handle_status().await?;
@@ -358,4 +389,17 @@ async fn test_cli_error_handling() {
     
     // Now check the test result
     result.expect("Test failed");
+}
+
+trait TestCleanup {
+    fn cleanup_files(&self) -> impl std::future::Future<Output = Result<(), NexaError>>;
+}
+
+impl TestCleanup for CliController {
+    fn cleanup_files(&self) -> impl std::future::Future<Output = Result<(), NexaError>> {
+        async move {
+            // Implementation
+            Ok(())
+        }
+    }
 }

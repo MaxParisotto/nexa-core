@@ -1,25 +1,25 @@
-use std::error::Error as StdError;
-use std::fmt;
-use std::io;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum NexaError {
+    #[error("Protocol error: {0}")]
     Protocol(String),
+    
+    #[error("Agent error: {0}")]
     Agent(String),
+    
+    #[error("System error: {0}")]
     System(String),
+    
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+    
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 }
-
-impl fmt::Display for NexaError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            NexaError::Protocol(msg) => write!(f, "Protocol error: {}", msg),
-            NexaError::Agent(msg) => write!(f, "Agent error: {}", msg),
-            NexaError::System(msg) => write!(f, "System error: {}", msg),
-        }
-    }
-}
-
-impl StdError for NexaError {}
 
 pub type Result<T> = std::result::Result<T, NexaError>;
 
@@ -32,25 +32,13 @@ impl NexaError {
         NexaError::Agent(msg.into())
     }
 
-    pub fn system<S: Into<String>>(message: S) -> Self {
-        NexaError::System(message.into())
-    }
-}
-
-impl From<io::Error> for NexaError {
-    fn from(error: io::Error) -> Self {
-        NexaError::system(error.to_string())
-    }
-}
-
-impl From<serde_json::Error> for NexaError {
-    fn from(error: serde_json::Error) -> Self {
-        NexaError::system(error.to_string())
+    pub fn system(msg: impl Into<String>) -> Self {
+        NexaError::System(msg.into())
     }
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for NexaError {
     fn from(error: tokio_tungstenite::tungstenite::Error) -> Self {
-        NexaError::system(error.to_string())
+        NexaError::protocol(error.to_string())
     }
 }

@@ -10,6 +10,9 @@ pub mod registry;
 pub mod server;
 pub mod protocol;
 pub mod tokens;
+pub mod cluster;
+pub mod config;
+pub mod loadbalancer;
 
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
@@ -168,6 +171,24 @@ impl ServerControl {
                 ServerState::Stopped | ServerState::Stopping => {
                     error!("Server stopped unexpectedly during startup");
                     return Err(NexaError::system("Server stopped unexpectedly during startup"));
+                }
+                ServerState::Error(err) => {
+                    error!("Server in error state: {}", err);
+                    self.monitoring.raise_alert(
+                        AlertLevel::Error,
+                        format!("Server error: {}", err),
+                        HashMap::new(),
+                    ).await;
+                    return Err(NexaError::system("Server in error state"));
+                }
+                ServerState::Maintenance => {
+                    info!("Server in maintenance mode");
+                    self.monitoring.raise_alert(
+                        AlertLevel::Warning,
+                        "Server in maintenance mode".to_string(),
+                        HashMap::new(),
+                    ).await;
+                    return Err(NexaError::system("Server in maintenance mode"));
                 }
                 ServerState::Starting => {
                     // Check if we have a bound address but haven't transitioned to Running yet

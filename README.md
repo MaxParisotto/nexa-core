@@ -22,17 +22,17 @@ Nexa Utils is a comprehensive Rust-based utility library providing essential too
 
 ### Multi-agent Control Protocol (MCP)
 
-- WebSocket-based communication
-- Protocol validation
-- Message handling
-- Connection management
+- WebSocket-based communication with automatic reconnection
+- Protocol validation and message handling
+- Secure connection management
+- Real-time status updates and metrics
 
 ### Monitoring System
 
-- Real-time metrics collection
-- Health checks
-- Alert system
-- Resource tracking
+- Real-time metrics collection (CPU, Memory, Network)
+- Health checks with configurable thresholds
+- Alert system with multiple severity levels
+- Resource tracking and usage optimization
 
 ## Project Structure
 
@@ -63,7 +63,7 @@ src/
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/nexa-utils.git
+git clone https://github.com/actualusername/nexa-utils.git
 cd nexa-utils
 
 # Build the project
@@ -84,6 +84,33 @@ use nexa_utils::mcp::ServerControl;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = ServerControl::new();
     server.start(Some("127.0.0.1:8080")).await?;
+    Ok(())
+}
+```
+
+### Connecting via WebSocket
+
+```rust
+use tokio_tungstenite::connect_async;
+use futures::{SinkExt, StreamExt};
+
+async fn connect_to_server() -> Result<(), Box<dyn std::error::Error>> {
+    let url = "ws://127.0.0.1:8080";
+    let (mut ws_stream, _) = connect_async(url).await?;
+    
+    // Send a message
+    let message = serde_json::json!({
+        "type": "status",
+        "agent_id": "test-agent",
+        "status": "Running"
+    });
+    ws_stream.send(Message::Text(message.to_string())).await?;
+    
+    // Receive response
+    if let Some(msg) = ws_stream.next().await {
+        println!("Received: {}", msg?);
+    }
+    
     Ok(())
 }
 ```
@@ -116,6 +143,9 @@ use nexa_utils::tokens::{TokenManager, ModelType};
 async fn track_tokens() -> Result<(), Box<dyn std::error::Error>> {
     let token_manager = TokenManager::new(memory_manager.clone());
     
+    // Define metadata
+    let metadata = "example_metadata"; // Replace with actual metadata as needed
+    
     token_manager.track_usage(
         ModelType::GPT4,
         100, // prompt tokens
@@ -135,21 +165,31 @@ The system can be configured through:
 2. Environment variables
 3. Configuration files
 
-Example configuration:
+### Environment Variables
 
-```toml
-[server]
-host = "127.0.0.1"
-port = 8080
+- `NEXA_LOG_LEVEL`: Set logging level (default: INFO)
+- `NEXA_MAX_CONNECTIONS`: Maximum concurrent connections (default: 1000)
+- `NEXA_HEALTH_CHECK_INTERVAL`: Health check interval in seconds (default: 30)
+- `NEXA_CONNECTION_TIMEOUT`: Connection timeout in seconds (default: 30)
 
-[monitoring]
-interval = 1000  # milliseconds
-cpu_threshold = 80.0  # percentage
-memory_threshold = 90.0  # percentage
+### Configuration File Example
 
-[tokens]
-rate_limit = 100000  # tokens per minute
-cost_tracking = true
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 8080
+  max_connections: 1000
+  health_check_interval: 30
+  connection_timeout: 30
+
+monitoring:
+  cpu_threshold: 80
+  memory_threshold: 90
+  alert_interval: 60
+
+logging:
+  level: "debug"
+  file: "/var/log/nexa/server.log"
 ```
 
 ## Building and Testing
@@ -219,14 +259,11 @@ RUST_LOG=debug cargo test
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+Please read CONTRIBUTING.md for details on our code of conduct and the process for submitting pull requests.
 
 ## License
 
-MIT License - See LICENSE file for details
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Contact
 
