@@ -330,10 +330,22 @@ impl ServerConfig {
     pub fn to_load_balancer_config(&self) -> LoadBalancerConfig {
         self.load_balancer.clone()
     }
+
+    pub fn load_yaml(&mut self, path: &PathBuf) -> Result<(), NexaError> {
+        let contents = fs::read_to_string(path)
+            .map_err(|err| NexaError::config(format!("Failed to read config file: {}", err)))?;
+            
+        let config: ServerConfig = serde_yaml::from_str(&contents)
+            .map_err(|err| NexaError::config(format!("YAML error: {}", err)))?;
+            
+        // Update configuration
+        *self = config;
+        Ok(())
+    }
 }
 
 impl From<serde_yaml::Error> for NexaError {
     fn from(err: serde_yaml::Error) -> Self {
-        NexaError::ConfigError(format!("YAML error: {}", err))
+        NexaError::config(format!("YAML error: {}", err))
     }
 } 

@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use nexa_core::mcp::loadbalancer::*;
 use tokio::runtime::Runtime;
 use std::time::Duration;
@@ -25,7 +25,6 @@ fn connection_pool_benchmark(c: &mut Criterion) {
                 );
 
                 // Acquire and release multiple connections
-                let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
                 for _ in 0..10 {
                     if let Ok(conn) = pool.acquire(addr).await {
                         pool.release(addr, conn).await;
@@ -46,17 +45,17 @@ fn connection_pool_benchmark(c: &mut Criterion) {
                 );
 
                 // Simulate concurrent connection requests
-                let mut handles = Vec::new();
+                let mut futures = Vec::new();
                 for _ in 0..50 {
                     let lb = lb.clone();
-                    handles.push(tokio::spawn(async move {
+                    futures.push(tokio::spawn(async move {
                         if let Ok(conn) = lb.get_connection(addr).await {
                             lb.release_connection(addr, conn).await;
                         }
                     }));
                 }
 
-                join_all(handles).await;
+                join_all(futures).await;
             });
         })
     });
@@ -112,5 +111,21 @@ fn load_balancer_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, connection_pool_benchmark, load_balancer_benchmark);
+pub fn loadbalancer_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("loadbalancer");
+    let rt = Runtime::new().unwrap();
+
+    group.bench_function("message_distribution", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                // Your benchmark code here
+                // Removed unused handles variable
+            });
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, connection_pool_benchmark, load_balancer_benchmark, loadbalancer_benchmark);
 criterion_main!(benches); 

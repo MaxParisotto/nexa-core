@@ -11,6 +11,7 @@ pub mod memory;
 pub mod tokens;
 pub mod utils;
 pub mod config;
+pub mod llm;
 
 // Re-export commonly used types
 pub use agent::{Agent, AgentStatus, Task, TaskStatus};
@@ -21,6 +22,8 @@ pub use monitoring::{
     SystemHealth, SystemStatus
 };
 pub use config::Config;
+pub use mcp::ServerControl;
+pub use llm::{LLMClient, LLMConfig};
 
 #[cfg(test)]
 mod tests {

@@ -13,6 +13,10 @@ pub mod tokens;
 pub mod cluster;
 pub mod config;
 pub mod loadbalancer;
+pub mod buffer;
+pub mod processor;
+pub mod cluster_processor;
+pub mod metrics;
 
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
@@ -26,11 +30,18 @@ use crate::monitoring::{
     MonitoringSystem, SystemMetrics, SystemHealth, SystemAlert, AlertLevel
 };
 use crate::memory::{MemoryManager, MemoryStats, ResourceType};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info};
 use chrono::Utc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use crate::tokens::{TokenManager, ModelType, TokenUsage};
+use crate::mcp::buffer::{MessageBuffer, BufferConfig, Priority, BufferedMessage};
+use crate::mcp::processor::{MessageProcessor, ProcessorConfig};
+use crate::mcp::cluster_processor::{ClusterProcessor, ClusterProcessorConfig};
+use crate::mcp::metrics::{MetricsCollector, AlertChecker, AlertThresholds};
+use std::net::SocketAddr;
+
+pub use cluster::{ClusterManager, ClusterConfig, Node, NodeRole};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MCPMessage {
@@ -110,6 +121,11 @@ pub struct ServerControl {
     pub monitoring: Arc<MonitoringSystem>,
     server: Arc<Server>,
     server_handle: Arc<RwLock<Option<tokio::task::JoinHandle<Result<(), NexaError>>>>>,
+    message_buffer: Arc<MessageBuffer>,
+    message_processor: Arc<RwLock<Option<MessageProcessor>>>,
+    cluster_processor: Arc<RwLock<Option<ClusterProcessor>>>,
+    metrics_collector: Arc<MetricsCollector>,
+    alert_checker: Arc<AlertChecker>,
     pid_file: PathBuf,
     socket_path: PathBuf,
 }
@@ -124,6 +140,11 @@ impl Clone for ServerControl {
             monitoring: self.monitoring.clone(),
             server: self.server.clone(),
             server_handle: self.server_handle.clone(),
+            message_buffer: self.message_buffer.clone(),
+            message_processor: self.message_processor.clone(),
+            cluster_processor: self.cluster_processor.clone(),
+            metrics_collector: self.metrics_collector.clone(),
+            alert_checker: self.alert_checker.clone(),
             pid_file: self.pid_file.clone(),
             socket_path: self.socket_path.clone(),
         }
@@ -135,6 +156,14 @@ impl ServerControl {
         let memory_manager = Arc::new(MemoryManager::new());
         let token_manager = Arc::new(TokenManager::new(memory_manager.clone()));
         let monitoring = Arc::new(MonitoringSystem::new(memory_manager.clone(), token_manager.clone()));
+        let message_buffer = Arc::new(MessageBuffer::new(BufferConfig::default()));
+        let message_processor = Arc::new(RwLock::new(None));
+        let cluster_processor = Arc::new(RwLock::new(None));
+        let metrics_collector = Arc::new(MetricsCollector::new());
+        let alert_checker = Arc::new(AlertChecker::new(
+            AlertThresholds::default(),
+            metrics_collector.clone(),
+        ));
 
         Self {
             pid_file: pid_file.clone(),
@@ -146,6 +175,11 @@ impl ServerControl {
             memory_manager,
             token_manager,
             monitoring,
+            message_buffer,
+            message_processor,
+            cluster_processor,
+            metrics_collector,
+            alert_checker,
         }
     }
 
@@ -156,27 +190,53 @@ impl ServerControl {
             return Err(NexaError::system("Server is already running"));
         }
 
-        // Validate and parse the address
-        let bind_addr = match addr {
-            Some(addr) => {
-                match addr.parse::<std::net::SocketAddr>() {
-                    Ok(addr) => Some(addr.to_string()),
-                    Err(_) => return Err(NexaError::protocol("Invalid address format")),
-                }
-            }
-            None => None,
-        };
+        // Start message processor
+        let mut processor = MessageProcessor::new(
+            ProcessorConfig::default(),
+            self.message_buffer.clone(),
+        );
+        processor.start().await?;
+        *self.message_processor.write().await = Some(processor);
 
-        let server = self.server.clone();
-        
-        // Start server in a new task
-        let handle = tokio::spawn(async move {
-            server.start_server(bind_addr).await
+        // Start cluster processor if clustering is enabled
+        let server_config = self.server.get_config().await?;
+        let cluster_config = Some(ClusterConfig {
+            min_quorum_size: 1,
+            heartbeat_interval: server_config.health_check_interval,
+            election_timeout: (
+                server_config.connection_timeout,
+                server_config.connection_timeout * 2
+            ),
+            // Add other fields as needed
+            ..Default::default()
         });
-        
+
+        if let Some(config) = cluster_config {
+            let bind_addr = addr
+                .and_then(|a| a.parse::<SocketAddr>().ok())
+                .unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
+                
+            let mut cluster_processor = ClusterProcessor::new(
+                ClusterProcessorConfig::default(),
+                self.message_buffer.clone(),
+                Arc::new(ClusterManager::new(bind_addr, Some(config))),
+            );
+            cluster_processor.start().await?;
+            *self.cluster_processor.write().await = Some(cluster_processor);
+        }
+
+        // Start message cleanup task
+        self.start_message_cleanup().await;
+
+        // Start server
+        let server = self.server.clone();
+        server.start().await?;
+
         // Store the handle
-        *self.server_handle.write().await = Some(handle);
-        
+        *self.server_handle.write().await = Some(tokio::spawn(async move {
+            Ok(())
+        }));
+
         // Poll the server state for up to 10 seconds until it becomes Running and has a bound address
         let timeout_duration = Duration::from_secs(10);
         let start_time = tokio::time::Instant::now();
@@ -192,45 +252,24 @@ impl ServerControl {
             }
             
             if start_time.elapsed() >= timeout_duration {
-                error!("Timeout waiting for server to start");
-                let _ = self.stop().await; // Attempt to stop the server if stuck
                 return Err(NexaError::system("Server failed to start within timeout"));
             }
             
-            // Check for early failure
-            if let Some(handle) = self.server_handle.write().await.take() {
-                if handle.is_finished() {
-                    match handle.await {
-                        Ok(Ok(_)) => {
-                            // Server completed successfully (unusual but possible)
-                            if self.server.get_state().await == ServerState::Running {
-                                if let Some(bound_addr) = self.server.get_bound_addr().await {
-                                    info!("Server started successfully on {}", bound_addr);
-                                    return Ok(());
-                                }
-                            }
-                            return Err(NexaError::system("Server task completed unexpectedly"));
-                        }
-                        Ok(Err(e)) => {
-                            error!("Server failed to start: {}", e);
-                            return Err(e);
-                        }
-                        Err(e) => {
-                            error!("Server task failed: {}", e);
-                            return Err(NexaError::system(format!("Server task failed: {}", e)));
-                        }
-                    }
-                } else {
-                    // Put the handle back since it's not finished
-                    *self.server_handle.write().await = Some(handle);
-                }
-            }
-            
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
+        // Stop cluster processor
+        if let Some(mut processor) = self.cluster_processor.write().await.take() {
+            processor.stop().await?;
+        }
+
+        // Stop message processor
+        if let Some(mut processor) = self.message_processor.write().await.take() {
+            processor.stop().await?;
+        }
+
         // Check if server is already stopped
         match self.server.get_state().await {
             ServerState::Stopped => {
@@ -395,6 +434,51 @@ impl ServerControl {
             }
         }
     }
+
+    /// Publish a message to the buffer
+    pub async fn publish_message(&self, msg: BufferedMessage) -> Result<(), NexaError> {
+        self.message_buffer.publish(msg).await
+            .map_err(|e| NexaError::system(format!("Failed to publish message: {}", e)))
+    }
+
+    /// Subscribe to messages
+    pub fn subscribe_to_messages(&self) -> broadcast::Receiver<BufferedMessage> {
+        self.message_buffer.subscribe()
+    }
+
+    /// Get the next message with the specified priority
+    pub fn get_next_message(&self, priority: Priority) -> Option<BufferedMessage> {
+        self.message_buffer.pop(priority)
+    }
+
+    /// Get the next message from any priority level (highest first)
+    pub fn get_next_message_any_priority(&self) -> Option<BufferedMessage> {
+        self.message_buffer.pop_any()
+    }
+
+    /// Start the message cleanup task
+    async fn start_message_cleanup(&self) {
+        let buffer = self.message_buffer.clone();
+        let cleanup_interval = buffer.config.cleanup_interval;
+        
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(cleanup_interval);
+            loop {
+                interval.tick().await;
+                buffer.cleanup().await;
+            }
+        });
+    }
+
+    /// Get message processing metrics
+    pub async fn get_message_metrics(&self) -> Result<metrics::MessageMetrics, NexaError> {
+        Ok(self.metrics_collector.get_metrics().await)
+    }
+
+    /// Get message processing alerts
+    pub async fn get_message_alerts(&self) -> Result<Vec<metrics::ProcessingAlert>, NexaError> {
+        Ok(self.alert_checker.check_alerts().await)
+    }
 }
 
 #[cfg(test)]
@@ -467,5 +551,58 @@ mod tests {
 
         let usage = server.get_agent_token_usage(agent_id, None).await;
         assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[tokio::test]
+    async fn test_message_buffer() {
+        let server = ServerControl::new(PathBuf::new(), PathBuf::new());
+        
+        // Create test message
+        let msg = BufferedMessage {
+            id: uuid::Uuid::new_v4(),
+            payload: vec![1, 2, 3],
+            priority: Priority::High,
+            created_at: SystemTime::now(),
+            attempts: 0,
+            max_attempts: 3,
+            delay_until: None,
+        };
+        
+        // Test publish
+        assert!(server.publish_message(msg.clone()).await.is_ok());
+        
+        // Test receive
+        let received = server.get_next_message(Priority::High);
+        assert!(received.is_some());
+        let received = received.unwrap();
+        assert_eq!(received.id, msg.id);
+        assert_eq!(received.priority, Priority::High);
+        
+        // Test subscription
+        let msg2 = BufferedMessage {
+            id: uuid::Uuid::new_v4(),
+            payload: vec![4, 5, 6],
+            priority: Priority::Critical,
+            created_at: SystemTime::now(),
+            attempts: 0,
+            max_attempts: 3,
+            delay_until: None,
+        };
+        
+        let mut subscriber = server.subscribe_to_messages();
+        let msg2_id = msg2.id;
+        let msg2_priority = msg2.priority;
+        
+        // Publish in a separate task to avoid deadlock
+        let server_clone = server.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            server_clone.publish_message(msg2).await.unwrap();
+        });
+        
+        // Wait for the message
+        let received = subscriber.recv().await.unwrap();
+        assert_eq!(received.id, msg2_id);
+        assert_eq!(received.priority, msg2_priority);
     }
 }

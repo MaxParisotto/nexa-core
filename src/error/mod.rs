@@ -10,7 +10,7 @@ pub enum NexaError {
     System(String),
     
     #[error("Configuration error: {0}")]
-    ConfigError(String),
+    Config(String),
     
     #[error("WebSocket error: {0}")]
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
@@ -23,6 +23,12 @@ pub enum NexaError {
     
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("Cluster error: {0}")]
+    Cluster(String),
+
+    #[error("Server error: {0}")]
+    Server(String),
 }
 
 impl NexaError {
@@ -39,11 +45,19 @@ impl NexaError {
     }
 
     pub fn config(msg: impl Into<String>) -> Self {
-        Self::ConfigError(msg.into())
+        Self::Config(msg.into())
     }
 
     pub fn yaml(msg: impl Into<String>) -> Self {
         Self::Yaml(msg.into())
+    }
+
+    pub fn cluster(msg: impl Into<String>) -> Self {
+        Self::Cluster(msg.into())
+    }
+
+    pub fn server<S: Into<String>>(msg: S) -> Self {
+        Self::Server(msg.into())
     }
 }
 

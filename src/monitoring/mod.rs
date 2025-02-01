@@ -28,7 +28,7 @@ pub struct SystemMetrics {
     pub memory_available: usize,
     pub token_usage: usize,
     pub token_cost: f64,
-    pub active_agents: usize,
+    pub active_agents: u32,
     pub error_count: usize,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
@@ -142,7 +142,7 @@ impl MonitoringSystem {
     }
 
     /// Collect current system metrics
-    pub async fn collect_metrics(&self, active_agents: usize) -> Result<SystemMetrics, NexaError> {
+    pub async fn collect_metrics(&self, active_agents: u32) -> Result<SystemMetrics, NexaError> {
         let memory_usage = self.memory_manager.get_stats().await;
         let token_usage = self.token_manager.get_usage_since(
             Utc::now() - chrono::Duration::hours(1)

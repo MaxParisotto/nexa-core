@@ -788,14 +788,12 @@ impl CliController {
                         // Implementation needed
                         Ok(())
                     }
-                    ConnectionCommands::Limit { max } => {
-                        info!("Setting connection limits");
-                        // Implementation needed
+                    ConnectionCommands::Limit { max: _ } => {
+                        // TODO: Implement connection limit
                         Ok(())
                     }
-                    ConnectionCommands::Disconnect { target } => {
-                        info!("Disconnecting client(s)");
-                        // Implementation needed
+                    ConnectionCommands::Disconnect { target: _ } => {
+                        // TODO: Implement connection disconnect
                         Ok(())
                     }
                 }

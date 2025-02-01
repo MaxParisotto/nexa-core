@@ -174,6 +174,7 @@ impl ProtocolHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     #[test]
     fn test_message_serialization() {
@@ -183,7 +184,8 @@ mod tests {
                 name: "Test Agent".to_string(),
                 capabilities: vec![],
                 status: AgentStatus::Idle,
-                current_tasks: vec![],
+                current_task: None,
+                last_heartbeat: Utc::now(),
             },
         };
 
