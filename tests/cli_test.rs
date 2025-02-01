@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 use futures::{SinkExt, StreamExt};
 use serde_json;
 
+#[allow(dead_code)]
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(9000);
 
 static TRACING: OnceCell<()> = OnceCell::new();
@@ -33,15 +34,13 @@ fn setup_logging() {
     });
 }
 
-fn get_next_test_port() -> u16 {
-    // Start from a random port in the dynamic range (49152-65535)
-    static START_PORT: AtomicU16 = AtomicU16::new(49152);
-    START_PORT.fetch_add(1, Ordering::SeqCst)
+fn get_next_port() -> u16 {
+    PORT_COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
 async fn find_available_port() -> Option<u16> {
     for _ in 0..100 {  // Try up to 100 times
-        let port = get_next_test_port();
+        let port = get_next_port();
         let addr = format!("127.0.0.1:{}", port);
         if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
             drop(listener);
@@ -471,6 +470,7 @@ async fn test_cli_error_handling() -> Result<(), NexaError> {
     Ok(())
 }
 
+#[allow(dead_code)]
 trait TestCleanup {
     fn cleanup_files(&self) -> impl std::future::Future<Output = Result<(), NexaError>>;
 }

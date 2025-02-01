@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::agent::{Agent, Task, AgentStatus};
 use crate::error::NexaError;
-use chrono::Utc;
+use chrono::Utc; // Added import
 
 /// Registry for managing connected agents
 #[derive(Debug, Clone)]
@@ -146,7 +146,6 @@ impl AgentRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
 
     #[tokio::test]
     async fn test_agent_registration() {

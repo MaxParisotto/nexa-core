@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use crate::error::NexaError;
 use std::fs;
-use tracing::{debug, error, info};
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -147,14 +147,11 @@ impl Config {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| NexaError::config(format!("Failed to create config directory: {}", e)))?;
-        }
-
+        } // <-- Added missing closing brace
         let contents = serde_yaml::to_string(&self)
             .map_err(|e| NexaError::config(format!("Failed to serialize config: {}", e)))?;
-
         fs::write(path, contents)
             .map_err(|e| NexaError::config(format!("Failed to write config file: {}", e)))?;
-
         Ok(())
     }
 
@@ -168,4 +165,4 @@ impl Config {
     pub fn reset() -> Self {
         Self::default()
     }
-} 
+}

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use std::time::Duration;
 use crate::error::NexaError;
-use tracing::{debug, error, info};
+use tracing::debug;
 
 /// Configuration for LLM client
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,4 +265,4 @@ mod tests {
             Err(_) => panic!("Reasoning request timed out"),
         }
     }
-} 
+}

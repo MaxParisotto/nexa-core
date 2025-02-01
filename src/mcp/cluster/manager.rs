@@ -351,14 +351,14 @@ impl ClusterManager {
     /// Broadcast message to all nodes
     pub async fn broadcast_message(&self, message: ClusterMessage) -> Result<(), NexaError> {
         // First update local state if needed
-        match &message {
-            ClusterMessage::StateSync { term, state } => {
+        match message {
+            ClusterMessage::StateSync { term: _, ref state } => { // Changed to borrow state
                 let mut state_guard = self.state.write().await;
                 *state_guard = state.clone();
             }
-            ClusterMessage::RequestVote { term, candidate_id } => {
+            ClusterMessage::RequestVote { term, candidate_id: _candidate_id } => { // ignore candidate_id
                 let mut state_guard = self.state.write().await;
-                state_guard.term = *term;
+                state_guard.term = term;
             }
             _ => {}
         }
@@ -387,42 +387,6 @@ impl ClusterManager {
 
     pub async fn transfer_messages(&self, _from_id: Uuid, _to_id: Uuid, _count: usize) -> Result<(), NexaError> {
         // TODO: Implement message transfer between nodes
-        Ok(())
-    }
-
-    async fn check_health(&self) -> Result<(), NexaError> {
-        let node_guard = self.node.read().await;
-        let state_guard = self.state.read().await;
-
-        // Check if we're the leader
-        if node_guard.role != NodeRole::Leader {
-            return Ok(());
-        }
-
-        // Check each node's health
-        for node_entry in self.nodes.iter() {
-            let node_id = *node_entry.key();
-            let last_seen = node_entry.value().last_heartbeat;
-
-            // Check if node has timed out
-            if let Ok(elapsed) = SystemTime::now().duration_since(last_seen) {
-                let config_guard = self.config.read().await;
-                if elapsed > config_guard.node_timeout {
-                    // Node has timed out - mark as unhealthy
-                    if let Some(mut node) = self.nodes.get_mut(&node_id) {
-                        node.health = NodeHealth::Unhealthy;
-
-                        // Broadcast state update
-                        let message = ClusterMessage::StateSync {
-                            term: state_guard.term,
-                            state: state_guard.clone(),
-                        };
-                        self.broadcast_message(message).await?;
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 }
@@ -468,4 +432,4 @@ mod tests {
             assert_eq!(state_guard.leader_id, Some(node_guard.id));
         }
     }
-} 
+}

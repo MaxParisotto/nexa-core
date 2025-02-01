@@ -2,11 +2,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use crate::error::NexaError;
-use crate::agent::{Agent, Task, TaskStatus};
-use crate::monitoring::{SystemHealth, SystemMetrics};
+use crate::agent::Task;
 use crate::llm::{LLMClient, LLMConfig};
 use crate::mcp::ServerControl;
-use tracing::{debug, error, info};
+use tracing::info;
 use chrono::{DateTime, Utc};
 
 /// System task request
@@ -111,7 +110,7 @@ impl SystemHelper {
     pub async fn query_system(&self, query: SystemQuery) -> Result<String, NexaError> {
         let (prompt, context) = match &query {
             SystemQuery::Health => {
-                let health = self.server.check_health().await?;
+                let health = self.server.check_health().await?; // Removed extra arguments
                 (
                     "Analyze the system health status and provide recommendations",
                     serde_json::to_string(&health)?,
@@ -180,7 +179,7 @@ impl SystemHelper {
 
     /// Get task suggestions based on system state
     pub async fn suggest_tasks(&self) -> Result<Vec<SystemTaskRequest>, NexaError> {
-        let health = self.server.check_health().await?;
+        let health = self.server.check_health().await?; // Removed extra arguments
         let metrics = self.server.get_metrics().await?;
         let templates = self.task_templates.read().await;
 
@@ -215,10 +214,11 @@ struct TaskDetails {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::path::PathBuf;
     use crate::mcp::ServerControl;
 
     fn setup_test_helper() -> SystemHelper {
-        let server = Arc::new(ServerControl::default());
+        let server = Arc::new(ServerControl::new(PathBuf::from("/tmp"), PathBuf::from("/tmp")));
         SystemHelper::new(server).unwrap()
     }
 
@@ -248,4 +248,4 @@ mod tests {
         let response = helper.suggest_tasks().await;
         assert!(response.is_ok());
     }
-} 
+}

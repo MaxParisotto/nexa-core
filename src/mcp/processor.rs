@@ -4,7 +4,6 @@ use tracing::{debug, error, info};
 use std::time::{Duration, SystemTime};
 use crate::error::NexaError;
 use crate::mcp::buffer::{BufferedMessage, Priority, MessageBuffer};
-use crate::mcp::MCPMessage;
 
 /// Configuration for message processor
 #[derive(Debug, Clone)]
@@ -229,4 +228,4 @@ mod tests {
         // Stop processor
         processor.stop().await.unwrap();
     }
-} 
+}

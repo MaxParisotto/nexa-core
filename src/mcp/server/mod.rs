@@ -68,6 +68,7 @@ pub struct ServerMetrics {
 #[derive(Clone, Debug)]
 pub struct Server {
     pid_file: PathBuf,
+    #[allow(dead_code)]
     socket_path: PathBuf,
     bound_addr: Arc<RwLock<Option<std::net::SocketAddr>>>,
     state: Arc<RwLock<ServerState>>,
@@ -79,7 +80,9 @@ pub struct Server {
     health_check_interval: Duration,
     max_connections: u32,
     connection_timeout: Duration,
+    #[allow(dead_code)]
     state_change_tx: Arc<watch::Sender<ServerState>>,
+    #[allow(dead_code)]
     state_change_rx: watch::Receiver<ServerState>,
     connected_clients: Arc<RwLock<HashMap<SocketAddr, SystemTime>>>,
     config: Arc<RwLock<ServerConfig>>,
@@ -338,7 +341,6 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn test_server_lifecycle() {

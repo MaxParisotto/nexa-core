@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, Instant};
 use crate::mcp::buffer::Priority;
 use serde::Serialize;
-use crate::error::NexaError;
 
 /// Message processing metrics
 #[derive(Debug, Clone, Serialize)]
@@ -236,13 +235,13 @@ impl AlertChecker {
         
         // Check queue sizes
         for (priority, size) in metrics.queue_sizes.iter() {
-            if *size >= self.thresholds.queue_size_critical {
+            if (*size) >= self.thresholds.queue_size_critical {
                 alerts.push(ProcessingAlert {
                     message: format!("{:?} priority queue is critically full ({} messages)", priority, size),
                     severity: AlertSeverity::Critical,
                     timestamp: SystemTime::now(),
                 });
-            } else if *size >= self.thresholds.queue_size_warning {
+            } else if (*size) >= self.thresholds.queue_size_warning {
                 alerts.push(ProcessingAlert {
                     message: format!("{:?} priority queue is near capacity ({} messages)", priority, size),
                     severity: AlertSeverity::Warning,
@@ -375,4 +374,4 @@ mod tests {
             .collect();
         assert!(!critical_alerts.is_empty());
     }
-} 
+}

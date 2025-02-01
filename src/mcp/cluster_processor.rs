@@ -59,16 +59,6 @@ impl MessageDistribution {
         *self.node_message_counts.entry(node_id).or_insert(0) += 1;
     }
 
-    fn remove_message(&mut self, msg_id: &Uuid) {
-        if let Some(nodes) = self.message_locations.remove(msg_id) {
-            for node_id in nodes {
-                if let Some(count) = self.node_message_counts.get_mut(&node_id) {
-                    *count = count.saturating_sub(1);
-                }
-            }
-        }
-    }
-
     fn get_nodes_for_message(&self, msg_id: &Uuid) -> Vec<Uuid> {
         self.message_locations
             .get(msg_id)
@@ -110,16 +100,16 @@ impl ClusterProcessor {
     /// Create a new cluster processor
     pub fn new(
         config: ClusterProcessorConfig,
-        buffer: Arc<MessageBuffer>,
+        _buffer: Arc<MessageBuffer>, // Renamed parameter to _buffer
         cluster: Arc<ClusterManager>,
     ) -> Self {
-        let processor = MessageProcessor::new(config.processor_config.clone(), buffer.clone());
+        let processor = MessageProcessor::new(config.processor_config.clone(), _buffer.clone());
         let distribution = Arc::new(tokio::sync::RwLock::new(MessageDistribution::new()));
         
         Self {
             processor,
             manager: cluster,
-            _buffer: buffer,
+            _buffer: _buffer,
             config,
             distribution,
             shutdown_tx: None,
@@ -271,4 +261,4 @@ impl ClusterProcessor {
 
         Ok(())
     }
-} 
+}

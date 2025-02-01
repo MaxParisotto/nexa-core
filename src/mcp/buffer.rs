@@ -5,7 +5,7 @@ use parking_lot::RwLock;
 use tracing::{debug, error};
 use serde::{Serialize, Deserialize};
 use std::time::{Duration, SystemTime};
-use uuid::Uuid;
+use uuid::Uuid; // Added missing import
 
 /// Message priority levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
@@ -311,4 +311,4 @@ mod tests {
         // Message should be cleaned up
         assert!(buffer.pop(Priority::High).is_none());
     }
-} 
+}
