@@ -284,7 +284,7 @@ impl Server {
         Ok(())
     }
 
-    pub async fn start_server(&self) -> Result<(), NexaError> {
+    pub async fn start_server(&self, bind_addr: Option<String>) -> Result<(), NexaError> {
         debug!("Starting server");
         
         // Check if server is already running
@@ -299,8 +299,10 @@ impl Server {
         self.write_pid().await?;
         
         // Create and bind TCP listener
-        let listener = TcpListener::bind("0.0.0.0:0").await
-            .map_err(|e| NexaError::system(format!("Failed to bind: {}", e)))?;
+        let bind_addr = bind_addr.unwrap_or_else(|| "127.0.0.1:0".to_string());
+        debug!("Binding to address: {}", bind_addr);
+        let listener = TcpListener::bind(&bind_addr).await
+            .map_err(|e| NexaError::system(format!("Failed to bind to {}: {}", bind_addr, e)))?;
             
         let addr = listener.local_addr()
             .map_err(|e| NexaError::system(format!("Failed to get local address: {}", e)))?;
@@ -328,13 +330,34 @@ impl Server {
             
             loop {
                 tokio::select! {
-                    Ok((stream, addr)) = listener.accept() => {
-                        let server = server.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(stream, addr, &server).await {
-                                error!("Connection error: {}", e);
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            Ok((stream, addr)) => {
+                                debug!("Accepted connection from {}", addr);
+                                let server = server.clone();
+                                
+                                // Check max connections before spawning task
+                                let current_connections = *server.active_connections.read().await;
+                                if current_connections >= server.max_connections {
+                                    error!("Maximum connections ({}) reached, rejecting connection from {}", 
+                                        server.max_connections, addr);
+                                    continue;
+                                }
+                                
+                                tokio::spawn(async move {
+                                    if let Err(e) = Self::handle_connection(stream, addr, &server).await {
+                                        error!("Connection error from {}: {}", addr, e);
+                                    }
+                                });
                             }
-                        });
+                            Err(e) => {
+                                error!("Accept error: {}", e);
+                                // Only break if it's a fatal error
+                                if e.kind() == std::io::ErrorKind::Other {
+                                    break;
+                                }
+                            }
+                        }
                     }
                     _ = shutdown_rx.recv() => {
                         debug!("Received shutdown signal");
@@ -470,6 +493,8 @@ impl Server {
     }
 
     async fn handle_connection(stream: TcpStream, addr: SocketAddr, server: &Server) -> Result<(), NexaError> {
+        debug!("New connection from {}", addr);
+        
         // Update connection metrics
         {
             let mut metrics = server.metrics.write().await;
@@ -482,6 +507,7 @@ impl Server {
             }
             *count += 1;
             metrics.active_connections = *count;
+            debug!("Active connections: {}", *count);
         }
         
         // Add to connected clients
@@ -490,10 +516,15 @@ impl Server {
             clients.insert(addr, SystemTime::now());
         }
         
-        // Set up WebSocket
-        let ws_stream = tokio_tungstenite::accept_async(stream).await
+        // Set up WebSocket with timeout
+        let ws_stream = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio_tungstenite::accept_async(stream)
+        ).await
+            .map_err(|_| NexaError::system("WebSocket handshake timed out"))?
             .map_err(|e| NexaError::system(format!("WebSocket handshake failed: {}", e)))?;
             
+        debug!("WebSocket connection established with {}", addr);
         let (write, read) = ws_stream.split();
         
         // Handle messages
@@ -503,6 +534,10 @@ impl Server {
         {
             let mut count = server.active_connections.write().await;
             *count = count.saturating_sub(1);
+            debug!("Connection closed. Active connections: {}", *count);
+            
+            let mut clients = server.connected_clients.write().await;
+            clients.remove(&addr);
         }
         
         handle_result
@@ -616,6 +651,8 @@ impl Server {
 
     async fn handle_websocket<S>(&self, mut read: SplitStream<WebSocketStream<S>>, mut write: SplitSink<WebSocketStream<S>, Message>) -> Result<(), NexaError> 
     where S: AsyncRead + AsyncWrite + Unpin {
+        debug!("Starting WebSocket message handling");
+        
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(msg) => {
@@ -624,35 +661,70 @@ impl Server {
                             debug!("Received text message: {}", text);
                             // Parse and handle the message
                             let response = serde_json::json!({
+                                "status": "success",
                                 "code": 200,
-                                "message": "Message received"
+                                "message": "Message received",
+                                "data": text
+                            });
+                            debug!("Sending response: {}", response);
+                            write.send(Message::Text(response.to_string()))
+                                .await
+                                .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
+                        }
+                        Message::Binary(data) => {
+                            debug!("Received binary message of {} bytes", data.len());
+                            let response = serde_json::json!({
+                                "status": "success",
+                                "code": 200,
+                                "message": "Binary message received",
+                                "size": data.len()
                             });
                             write.send(Message::Text(response.to_string()))
                                 .await
                                 .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
                         }
-                        Message::Close(_) => {
-                            debug!("Client initiated close");
+                        Message::Close(frame) => {
+                            debug!("Client initiated close: {:?}", frame);
+                            // Send close frame back if one was received
+                            if let Some(frame) = frame {
+                                debug!("Sending close frame back");
+                                write.send(Message::Close(Some(frame)))
+                                    .await
+                                    .map_err(|e| NexaError::system(format!("Failed to send close frame: {}", e)))?;
+                            }
                             break;
                         }
-                        _ => {
-                            debug!("Received non-text message");
-                            let response = serde_json::json!({
-                                "code": 400,
-                                "message": "Unsupported message type"
-                            });
-                            write.send(Message::Text(response.to_string()))
+                        Message::Ping(data) => {
+                            debug!("Received ping, sending pong");
+                            write.send(Message::Pong(data))
                                 .await
-                                .map_err(|e| NexaError::system(format!("Failed to send response: {}", e)))?;
+                                .map_err(|e| NexaError::system(format!("Failed to send pong: {}", e)))?;
+                        }
+                        Message::Pong(_) => {
+                            debug!("Received pong");
+                        }
+                        Message::Frame(_) => {
+                            debug!("Received raw frame, ignoring");
                         }
                     }
                 }
                 Err(e) => {
-                    error!("Error receiving message: {}", e);
-                    break;
+                    error!("WebSocket message error: {}", e);
+                    // Send error response before returning
+                    let error_response = serde_json::json!({
+                        "status": "error",
+                        "code": 500,
+                        "message": format!("WebSocket error: {}", e)
+                    });
+                    if let Err(send_err) = write.send(Message::Text(error_response.to_string())).await {
+                        error!("Failed to send error response: {}", send_err);
+                    }
+                    return Err(NexaError::system(format!("WebSocket message error: {}", e)));
                 }
             }
         }
+        
+        debug!("WebSocket connection closed gracefully");
         Ok(())
     }
 
@@ -718,7 +790,7 @@ mod tests {
         
         // Start server with random port
         tokio::spawn(async move {
-            if let Err(e) = server_clone.start_server().await {
+            if let Err(e) = server_clone.start_server(None).await {
                 error!("Server error: {}", e);
             }
         });
@@ -785,7 +857,7 @@ impl ServerControl {
         
         // Start server in a new task
         let handle = tokio::spawn(async move {
-            server.start_server().await
+            server.start_server(None).await
         });
         
         // Store the handle

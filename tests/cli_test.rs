@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, error};
 use once_cell::sync::OnceCell;
 use uuid::Uuid;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -11,6 +11,7 @@ use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use futures::{SinkExt, StreamExt};
+use serde_json;
 
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(9000);
 
@@ -150,8 +151,10 @@ async fn setup() -> Result<(CliController, String), NexaError> {
     // Find an available port
     let port = find_available_port().await
         .ok_or_else(|| NexaError::system("Could not find available port"))?;
-    let server_addr = format!("0.0.0.0:{}", port);  // Use 0.0.0.0 for server binding
-    let client_addr = format!("127.0.0.1:{}", port);  // Use 127.0.0.1 for client connections
+    
+    // Use 127.0.0.1 for both server and client to ensure local connections work
+    let addr = format!("127.0.0.1:{}", port);
+    debug!("Using address {} for server and client", addr);
     
     // Clean up any existing files
     let cleanup = async {
@@ -174,7 +177,7 @@ async fn setup() -> Result<(CliController, String), NexaError> {
     // Add delay to ensure file system operations are complete
     sleep(Duration::from_millis(100)).await;
     
-    Ok((controller, client_addr))
+    Ok((controller, addr))
 }
 
 async fn teardown() {
@@ -258,53 +261,180 @@ async fn test_cli_concurrent_connections() -> Result<(), NexaError> {
     let (cli, addr) = setup().await?;
     
     // Start server
+    info!("Starting server with address: {}", addr);
     cli.handle_start(&Some(addr.clone())).await?;
+    info!("Waiting for server to start");
     wait_for_server_start(&cli).await?;
+    
+    // Add additional delay to ensure WebSocket server is fully initialized
+    info!("Adding delay for server initialization");
+    sleep(Duration::from_secs(1)).await;
+    
+    // Verify server is running and ready
+    let server_state = cli.get_server_state().await?;
+    info!("Server state: {:?}", server_state);
+    assert_eq!(server_state, ServerState::Running);
+    
+    // Verify server is accepting connections
+    info!("Verifying server is accepting connections");
+    let ws_url = format!("ws://{}", addr);
+    let mut retries = 5;
+    let mut connected = false;
+    while retries > 0 && !connected {
+        match connect_async(&ws_url).await {
+            Ok((mut ws_stream, _)) => {
+                info!("Successfully established test connection");
+                ws_stream.close(None).await
+                    .map_err(|e| NexaError::system(format!("Failed to close test connection: {}", e)))?;
+                connected = true;
+            }
+            Err(e) => {
+                error!("Test connection attempt failed (retries left: {}): {}", retries - 1, e);
+                retries -= 1;
+                if retries > 0 {
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+    }
+    
+    if !connected {
+        return Err(NexaError::system("Failed to verify server is accepting connections"));
+    }
     
     // Create multiple WebSocket connections
     let mut handles = Vec::new();
     for i in 0..3 {
         let addr = addr.clone();
+        info!("Spawning connection task {}", i);
         let handle = tokio::spawn(async move {
-            let mut retries = 3;
+            let mut retries = 5;
             let mut last_error = None;
+            let ws_url = format!("ws://{}", addr);
+            info!("Connection {}: Attempting to connect to {}", i, ws_url);
             
             while retries > 0 {
-                match connect_async(format!("ws://{}", addr)).await {
-                    Ok((ws_stream, _)) => {
-                        debug!("Connection {} established", i);
-                        return Ok::<_, NexaError>(ws_stream);
+                info!("Connection {}: Attempt {} of 5", i, 6 - retries);
+                match connect_async(&ws_url).await {
+                    Ok((mut ws_stream, _)) => {
+                        info!("Connection {}: Successfully established", i);
+                        
+                        // Send a test message
+                        let test_msg = serde_json::json!({
+                            "type": "test",
+                            "connection_id": i,
+                            "message": "Hello from test client"
+                        });
+                        info!("Connection {}: Sending test message: {}", i, test_msg);
+                        ws_stream.send(Message::Text(test_msg.to_string()))
+                            .await
+                            .map_err(|e| NexaError::system(format!("Failed to send message: {}", e)))?;
+                        
+                        // Wait for response with timeout
+                        info!("Connection {}: Waiting for response", i);
+                        match tokio::time::timeout(Duration::from_secs(5), ws_stream.next()).await {
+                            Ok(Some(Ok(msg))) => {
+                                match msg {
+                                    Message::Text(text) => {
+                                        info!("Connection {}: Received response: {}", i, text);
+                                        // Parse and verify response
+                                        if let Ok(response) = serde_json::from_str::<serde_json::Value>(&text) {
+                                            if response["status"] == "success" && response["code"] == 200 {
+                                                info!("Connection {}: Response validation successful", i);
+                                            } else {
+                                                error!("Connection {}: Invalid response format: {}", i, text);
+                                                return Err(NexaError::system(format!("Invalid response format: {}", text)));
+                                            }
+                                        } else {
+                                            error!("Connection {}: Failed to parse response JSON: {}", i, text);
+                                            return Err(NexaError::system(format!("Failed to parse response JSON: {}", text)));
+                                        }
+                                    }
+                                    _ => {
+                                        error!("Connection {}: Unexpected message type: {:?}", i, msg);
+                                        return Err(NexaError::system(format!("Unexpected message type: {:?}", msg)));
+                                    }
+                                }
+                            }
+                            Ok(Some(Err(e))) => {
+                                error!("Connection {}: Error receiving response: {}", i, e);
+                                return Err(NexaError::system(format!("WebSocket error: {}", e)));
+                            }
+                            Ok(None) => {
+                                error!("Connection {}: Connection closed unexpectedly", i);
+                                return Err(NexaError::system("Connection closed unexpectedly"));
+                            }
+                            Err(_) => {
+                                error!("Connection {}: Timeout waiting for response", i);
+                                return Err(NexaError::system("Timeout waiting for response"));
+                            }
+                        }
+                        
+                        // Close connection gracefully
+                        info!("Connection {}: Closing connection", i);
+                        ws_stream.close(None)
+                            .await
+                            .map_err(|e| NexaError::system(format!("Failed to close connection: {}", e)))?;
+                        
+                        info!("Connection {}: Successfully completed", i);
+                        return Ok(());
                     }
                     Err(e) => {
-                        last_error = Some(e);
+                        error!("Connection {} attempt failed (retries left: {}): {}", i, retries - 1, e);
+                        last_error = Some(e.to_string());
                         retries -= 1;
                         if retries > 0 {
-                            sleep(Duration::from_millis(500)).await;
+                            info!("Connection {}: Waiting before retry", i);
+                            sleep(Duration::from_millis(1000)).await;
                         }
                     }
                 }
             }
-            Err(NexaError::system(format!("Failed to connect after retries: {:?}", last_error)))
+            Err(NexaError::system(format!("Failed to connect after all retries. Last error: {:?}", last_error)))
         });
         handles.push(handle);
+        // Add small delay between spawning connections
+        sleep(Duration::from_millis(100)).await;
     }
     
-    // Wait for all connections
-    for handle in handles {
+    // Wait for all connections with improved error handling
+    info!("Waiting for all connections to complete");
+    for (i, handle) in handles.into_iter().enumerate() {
+        info!("Waiting for connection {} to complete", i);
         match handle.await {
             Ok(result) => {
-                result?;
+                match result {
+                    Ok(_) => info!("Connection {} completed successfully", i),
+                    Err(e) => {
+                        error!("Connection {} failed with error: {}", i, e);
+                        // Stop server before returning error
+                        let _ = cli.handle_stop().await;
+                        let _ = wait_for_server_stop(&cli).await;
+                        return Err(e);
+                    }
+                }
             }
             Err(e) => {
-                return Err(NexaError::system(format!("Task join error: {}", e)));
+                error!("Task {} join error: {}", i, e);
+                // Stop server before returning error
+                let _ = cli.handle_stop().await;
+                let _ = wait_for_server_stop(&cli).await;
+                return Err(NexaError::system(format!("Task {} join error: {}", i, e)));
             }
         }
     }
     
+    // Add delay before stopping to ensure connections are established
+    info!("All connections completed, waiting before stopping server");
+    sleep(Duration::from_millis(500)).await;
+    
     // Stop server
+    info!("Stopping server");
     cli.handle_stop().await?;
+    info!("Waiting for server to stop");
     wait_for_server_stop(&cli).await?;
     
+    info!("Test completed successfully");
     Ok(())
 }
 

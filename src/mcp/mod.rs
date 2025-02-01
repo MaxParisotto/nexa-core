@@ -150,18 +150,84 @@ impl ServerControl {
     }
 
     pub async fn start(&self, addr: Option<&str>) -> Result<(), NexaError> {
-        // Validate address if provided
-        if let Some(addr) = addr {
-            if let Err(_) = addr.parse::<std::net::SocketAddr>() {
-                return Err(NexaError::protocol("Invalid address format"));
-            }
+        // Early check: if server task already exists, then server is running
+        if self.server_handle.read().await.is_some() {
+            error!("Server is already running");
+            return Err(NexaError::system("Server is already running"));
         }
 
-        if let Err(e) = self.server.start_server().await {
-            error!("Failed to start server: {}", e);
-            return Err(e);
+        // Validate and parse the address
+        let bind_addr = match addr {
+            Some(addr) => {
+                match addr.parse::<std::net::SocketAddr>() {
+                    Ok(addr) => Some(addr.to_string()),
+                    Err(_) => return Err(NexaError::protocol("Invalid address format")),
+                }
+            }
+            None => None,
+        };
+
+        let server = self.server.clone();
+        
+        // Start server in a new task
+        let handle = tokio::spawn(async move {
+            server.start_server(bind_addr).await
+        });
+        
+        // Store the handle
+        *self.server_handle.write().await = Some(handle);
+        
+        // Poll the server state for up to 10 seconds until it becomes Running and has a bound address
+        let timeout_duration = Duration::from_secs(10);
+        let start_time = tokio::time::Instant::now();
+        
+        loop {
+            if self.server.get_state().await == ServerState::Running {
+                if let Some(bound_addr) = self.server.get_bound_addr().await {
+                    // Add a small delay to ensure the WebSocket server is fully initialized
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    info!("Server started successfully on {}", bound_addr);
+                    return Ok(());
+                }
+            }
+            
+            if start_time.elapsed() >= timeout_duration {
+                error!("Timeout waiting for server to start");
+                let _ = self.stop().await; // Attempt to stop the server if stuck
+                return Err(NexaError::system("Server failed to start within timeout"));
+            }
+            
+            // Check for early failure
+            if let Some(handle) = self.server_handle.write().await.take() {
+                if handle.is_finished() {
+                    match handle.await {
+                        Ok(Ok(_)) => {
+                            // Server completed successfully (unusual but possible)
+                            if self.server.get_state().await == ServerState::Running {
+                                if let Some(bound_addr) = self.server.get_bound_addr().await {
+                                    info!("Server started successfully on {}", bound_addr);
+                                    return Ok(());
+                                }
+                            }
+                            return Err(NexaError::system("Server task completed unexpectedly"));
+                        }
+                        Ok(Err(e)) => {
+                            error!("Server failed to start: {}", e);
+                            return Err(e);
+                        }
+                        Err(e) => {
+                            error!("Server task failed: {}", e);
+                            return Err(NexaError::system(format!("Server task failed: {}", e)));
+                        }
+                    }
+                } else {
+                    // Put the handle back since it's not finished
+                    *self.server_handle.write().await = Some(handle);
+                }
+            }
+            
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        Ok(())
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
