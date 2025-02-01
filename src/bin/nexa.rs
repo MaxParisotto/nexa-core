@@ -5,7 +5,7 @@ use std::error::Error;
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing for logging
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_max_level(tracing::Level::TRACE)
         .init();
 
     // Create and run CLI controller

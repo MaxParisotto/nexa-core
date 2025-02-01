@@ -15,6 +15,7 @@ use crate::error::NexaError;
 use std::time::Duration;
 use std::cmp::min;
 use sysinfo;
+use std::error::Error;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -25,11 +26,21 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Start the Nexa Core server
     Start {
-        #[arg(short, long)]
-        config: Option<String>,
+        /// Port to listen on
+        #[arg(short, long, default_value_t = 8080)]
+        port: u16,
+        
+        /// Host to bind to
+        #[arg(short, long, default_value = "127.0.0.1")]
+        host: String,
     },
+    
+    /// Stop the Nexa Core server
     Stop,
+    
+    /// Get the status of the Nexa Core server
     Status,
 }
 
@@ -410,23 +421,33 @@ impl Clone for CliController {
 }
 
 impl CliController {
-    pub async fn run(&self) -> Result<(), NexaError> {
+    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
         let cli = Cli::parse();
 
-        match &cli.command {
-            Commands::Start { config } => {
-                self.handle_start(config).await?;
+        match cli.command {
+            Commands::Start { port, host } => {
+                info!("Starting Nexa Core server on {}:{}", host, port);
+                // Create a basic config string with the port and host
+                let config = format!(r#"
+                    server:
+                      host: "{}"
+                      port: {}
+                "#, host, port);
+                self.handle_start(&Some(config)).await?;
+                Ok(())
             }
             Commands::Stop => {
+                info!("Stopping Nexa Core server");
                 self.handle_stop().await?;
+                Ok(())
             }
             Commands::Status => {
+                info!("Checking Nexa Core server status");
                 let status = self.handle_status().await?;
                 println!("{}", status);
+                Ok(())
             }
         }
-
-        Ok(())
     }
 }
 
