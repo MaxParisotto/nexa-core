@@ -100,16 +100,16 @@ impl ClusterProcessor {
     /// Create a new cluster processor
     pub fn new(
         config: ClusterProcessorConfig,
-        _buffer: Arc<MessageBuffer>, // Renamed parameter to _buffer
+        buffer: Arc<MessageBuffer>,
         cluster: Arc<ClusterManager>,
     ) -> Self {
-        let processor = MessageProcessor::new(config.processor_config.clone(), _buffer.clone());
+        let processor = MessageProcessor::new(config.processor_config.clone(), buffer.clone());
         let distribution = Arc::new(tokio::sync::RwLock::new(MessageDistribution::new()));
         
         Self {
             processor,
             manager: cluster,
-            _buffer: _buffer,
+            _buffer: buffer,
             config,
             distribution,
             shutdown_tx: None,
@@ -126,7 +126,7 @@ impl ClusterProcessor {
 
         // Start message sync task
         let sync_task = {
-            let buffer = self._buffer.clone();
+            let _buffer = self._buffer.clone();
             let cluster = self.manager.clone();
             let distribution = self.distribution.clone();
             let config = self.config.clone();
@@ -136,7 +136,7 @@ impl ClusterProcessor {
                 loop {
                     interval.tick().await;
                     if let Err(e) = Self::sync_messages(
-                        buffer.clone(),
+                        _buffer.clone(),
                         cluster.clone(),
                         distribution.clone(),
                         config.replication_factor,
@@ -149,7 +149,7 @@ impl ClusterProcessor {
 
         // Start redistribution task
         let redistribution_task = {
-            let buffer = self._buffer.clone();
+            let _buffer = self._buffer.clone();
             let cluster = self.manager.clone();
             let distribution = self.distribution.clone();
             let config = self.config.clone();
@@ -159,7 +159,7 @@ impl ClusterProcessor {
                 loop {
                     interval.tick().await;
                     if let Err(e) = Self::redistribute_messages(
-                        buffer.clone(),
+                        _buffer.clone(),
                         cluster.clone(),
                         distribution.clone(),
                     ).await {
@@ -230,7 +230,7 @@ impl ClusterProcessor {
 
     /// Redistribute messages for better balance
     async fn redistribute_messages(
-        buffer: Arc<MessageBuffer>,
+        _buffer: Arc<MessageBuffer>,
         cluster: Arc<ClusterManager>,
         distribution: Arc<tokio::sync::RwLock<MessageDistribution>>,
     ) -> Result<(), NexaError> {
