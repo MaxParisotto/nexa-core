@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use nexa_core::mcp::{cluster::*, config::*};
 use tokio::runtime::Runtime;
 use std::time::Duration;
