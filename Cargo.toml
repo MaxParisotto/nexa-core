@@ -1,51 +1,38 @@
 [package]
-name = "nexa-utils"
-version = "0.1.0"
+name = "nexa-core"
+version = "1.0.0"
 edition = "2021"
+description = "High-performance WebSocket server implementation in Rust"
+authors = ["Your Name <your.email@example.com>"]
+
+[[bin]]
+name = "nexa"
+path = "src/bin/nexa.rs"
 
 [dependencies]
-tokio = { version = "1.35", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "1.0"
-futures = "0.3"
-uuid = { version = "1.2", features = ["v4", "serde"] }
-nix = { version = "0.27", features = ["process", "signal"] }
-clap = { version = "4.5", features = ["derive"] }
-chrono = { version = "0.4", features = ["serde"] }
-utoipa = { version = "4.2", features = ["chrono", "uuid"] }
-tokio-tungstenite = "0.21"
-sysinfo = "0.30"
-serde_yaml = "0.9"
-once_cell = "1.19.0"
+tokio = { version = "1.43.0", features = ["full"] }
+tokio-tungstenite = "0.21.0"
+tungstenite = "0.21.0"
+futures = "0.3.31"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
+serde_yaml = "0.9.34"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+uuid = { version = "1.12.1", features = ["v4", "serde"] }
+clap = { version = "4.5.27", features = ["derive"] }
+sysinfo = "0.30.13"
+chrono = { version = "0.4.39", features = ["serde"] }
+url = "2.5.4"
+utoipa = { version = "4.2.3", features = ["actix_extras"] }
+thiserror = "1.0.69"
+nix = { version = "0.27.1", features = ["process", "signal"] }
 
 [dev-dependencies]
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-criterion = { version = "0.5", features = ["async_tokio"] }
-tokio-test = "0.4"
-test-log = { version = "0.2", features = ["trace"] }
-env_logger = "0.10"
-proptest = "1.4"
-tempfile = "3.9"
-url = "2.5"
-rand = { version = "0.8", features = ["small_rng"] }
-
-[features]
-default = []
-torch = []
+tokio-test = "0.4.3"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
-
-[[bench]]
-name = "cluster_bench"
-harness = false
-
-[[bench]]
-name = "loadbalancer_bench"
-harness = false
+panic = "unwind"
