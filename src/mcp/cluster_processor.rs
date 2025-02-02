@@ -103,7 +103,8 @@ impl ClusterProcessor {
         buffer: Arc<MessageBuffer>,
         cluster: Arc<ClusterManager>,
     ) -> Self {
-        let processor = MessageProcessor::new(config.processor_config.clone(), buffer.clone());
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let processor = MessageProcessor::new(config.processor_config.clone(), buffer.clone(), shutdown_rx);
         let distribution = Arc::new(tokio::sync::RwLock::new(MessageDistribution::new()));
         
         Self {

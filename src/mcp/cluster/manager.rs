@@ -389,6 +389,17 @@ impl ClusterManager {
         // TODO: Implement message transfer between nodes
         Ok(())
     }
+
+    #[allow(dead_code)]
+    fn process_message(&self, message: ClusterMessage) {
+        // Instead of directly propagating the error:
+        // self.message_tx.send(message).expect("Failed to send message");
+        // Use error handling that logs a warning in case the channel is closed.
+        if let Err(e) = self.message_tx.send(message) {
+            tracing::debug!("Failed to send cluster message (channel closed?): {}", e);
+        }
+        // ...existing code...
+    }
 }
 
 #[cfg(test)]

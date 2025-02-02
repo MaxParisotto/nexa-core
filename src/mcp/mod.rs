@@ -254,9 +254,11 @@ impl ServerControl {
         *self.server_handle.write().await = Some(server_handle);
 
         // Now start message processor
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let mut processor = MessageProcessor::new(
             ProcessorConfig::default(),
             self.message_buffer.clone(),
+            shutdown_rx
         );
         processor.start().await?;
         *self.message_processor.write().await = Some(processor);

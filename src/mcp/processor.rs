@@ -3,7 +3,7 @@ use tracing::{debug, error, info};
 use crate::error::NexaError;
 use crate::mcp::buffer::{BufferedMessage, MessageBuffer, Priority};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// Configuration for message processor
 #[derive(Debug, Clone)]
@@ -46,16 +46,18 @@ pub struct MessageProcessor {
     buffer: Arc<MessageBuffer>,
     workers: Vec<tokio::task::JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
+    shutdown_rx: watch::Receiver<bool>,
 }
 
 impl MessageProcessor {
     /// Create a new message processor
-    pub fn new(config: ProcessorConfig, buffer: Arc<MessageBuffer>) -> Self {
+    pub fn new(config: ProcessorConfig, buffer: Arc<MessageBuffer>, shutdown_rx: watch::Receiver<bool>) -> Self {
         Self {
             config,
             buffer,
             workers: Vec::new(),
             shutdown_tx: None,
+            shutdown_rx,
         }
     }
 
@@ -71,9 +73,10 @@ impl MessageProcessor {
             let buffer = self.buffer.clone();
             let config = self.config.clone();
             let shutdown_rx = shutdown_rx.clone();
+            let shutdown_signal = self.shutdown_rx.clone();
 
             let handle = tokio::spawn(async move {
-                Self::worker_loop(worker_id, buffer, config, shutdown_rx).await;
+                Self::worker_loop(worker_id, buffer, config, shutdown_rx, shutdown_signal).await;
             });
 
             self.workers.push(handle);
@@ -100,10 +103,17 @@ impl MessageProcessor {
         buffer: Arc<MessageBuffer>,
         config: ProcessorConfig,
         shutdown_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<()>>>,
+        shutdown_signal: watch::Receiver<bool>,
     ) {
         let mut shutdown_rx = shutdown_rx.lock().await;
 
         loop {
+            // Check if shutdown was signaled.
+            if *shutdown_signal.borrow() {
+                debug!("Worker {} received shutdown signal.", worker_id);
+                break;
+            }
+
             tokio::select! {
                 _ = shutdown_rx.recv() => {
                     debug!("Worker {} shutting down", worker_id);
@@ -137,6 +147,7 @@ impl MessageProcessor {
                 }
             }
         }
+        debug!("Worker {} exiting.", worker_id);
     }
 
     /// Process a single message
@@ -190,12 +201,14 @@ impl std::fmt::Debug for MessageProcessor {
 mod tests {
     use super::*;
     use uuid::Uuid;
+    use tokio::sync::watch;
 
     #[tokio::test]
     async fn test_message_processing() {
         let buffer = Arc::new(MessageBuffer::new(Default::default()));
         let config = ProcessorConfig::default();
-        let mut processor = MessageProcessor::new(config, buffer.clone());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut processor = MessageProcessor::new(config, buffer.clone(), shutdown_rx);
 
         // Start processor
         processor.start().await.unwrap();
@@ -229,6 +242,9 @@ mod tests {
 
         // Wait for processing
         tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Signal shutdown
+        let _ = shutdown_tx.send(true);
 
         // Stop processor
         processor.stop().await.unwrap();

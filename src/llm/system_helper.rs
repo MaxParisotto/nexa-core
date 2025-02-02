@@ -265,6 +265,17 @@ struct TaskDetails {
     estimated_duration: i64,
 }
 
+// Provide dummy implementations for system queries and task creation.
+pub async fn system_query(query: &str) -> Result<String, ()> {
+    // Dummy response – in real use, perform an actual system query.
+    Ok(format!("Response for query: {}", query))
+}
+
+pub async fn create_task(task: &str) -> Result<String, ()> {
+    // Dummy task creation – simply echo the provided task.
+    Ok(format!("Created task: {}", task))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

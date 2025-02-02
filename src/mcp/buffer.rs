@@ -91,7 +91,7 @@ impl MessageBuffer {
             VecDeque::with_capacity(config.capacity), // Critical
         ]));
         
-        let size = Arc::new(RwLock::new(0));
+        let size = Arc::new(RwLock::new(0usize));
         let queues_clone = queues.clone();
         let size_clone = size.clone();
         
@@ -106,7 +106,36 @@ impl MessageBuffer {
                 }
                 
                 if let Err(e) = sub_tx_clone.send(msg) {
-                    error!("Failed to broadcast message: {}", e);
+                    debug!("Broadcast send issue (possibly no active receivers): {}", e);
+                }
+            }
+        });
+
+        // Spawn periodic cleanup task
+        let queues_cleanup = queues.clone();
+        let size_cleanup = size.clone();
+        let cleanup_interval = config.cleanup_interval;
+        let message_ttl = config.message_ttl;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(cleanup_interval);
+            loop {
+                interval.tick().await;
+                let now = SystemTime::now();
+                let mut total_removed: usize = 0; // explicit type annotation
+                {
+                    let mut qs = queues_cleanup.write();
+                    let mut size_ref = size_cleanup.write();
+                    for queue in qs.iter_mut() {
+                        let initial = queue.len();
+                        queue.retain(|msg| {
+                            msg.created_at.elapsed().map_or(false, |elapsed| elapsed < message_ttl)
+                        });
+                        total_removed += initial - queue.len();
+                    }
+                    *size_ref = (*size_ref).saturating_sub(total_removed);
+                }
+                if total_removed > 0 {
+                    debug!("Cleaned up {} expired messages", total_removed);
                 }
             }
         });
