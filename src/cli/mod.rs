@@ -50,7 +50,12 @@ impl CliHandler {
         Self { pid_file, server }
     }
 
-    fn is_server_running(&self) -> bool {
+    pub fn new_with_paths(pid_file: PathBuf, socket_path: PathBuf) -> Self {
+        let server = ServerControl::new(pid_file.clone(), socket_path);
+        Self { pid_file, server }
+    }
+
+    pub fn is_server_running(&self) -> bool {
         if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
                 return unsafe { libc::kill(pid, 0) == 0 };
@@ -59,7 +64,7 @@ impl CliHandler {
         false
     }
 
-    async fn handle_start(&self) -> Result<(), NexaError> {
+    pub async fn start(&self, addr: Option<&str>) -> Result<(), NexaError> {
         if self.is_server_running() {
             println!("Server is already running");
             return Ok(());
@@ -78,45 +83,59 @@ impl CliHandler {
             process::exit(0);
         })?;
 
-        info!("Starting Nexa Core server on 0.0.0.0:8080");
-        self.server.start(None).await?;
+        info!("Starting Nexa Core server");
+        self.server.start(addr).await?;
 
         Ok(())
     }
 
-    async fn handle_stop(&self) -> Result<(), NexaError> {
+    pub async fn stop(&self) -> Result<(), NexaError> {
         if !self.is_server_running() {
             println!("Server is not running");
             return Ok(());
         }
 
-        let pid_str = fs::read_to_string(&self.pid_file)
-            .map_err(|e| NexaError::system(format!("Failed to read PID file: {}", e)))?;
-        let pid = pid_str.trim().parse::<i32>()
-            .map_err(|e| NexaError::system(format!("Invalid PID in file: {}", e)))?;
-
-        // Send SIGTERM
-        if let Err(e) = signal::kill(Pid::from_raw(pid), signal::Signal::SIGTERM) {
-            error!("Failed to send SIGTERM to process {}: {}", pid, e);
+        // First try to stop the server gracefully
+        if let Err(e) = self.server.stop().await {
+            error!("Failed to stop server gracefully: {}", e);
         }
 
-        // Wait for server to stop
-        for _ in 0..10 {
-            if !self.is_server_running() {
-                if let Err(e) = fs::remove_file(&self.pid_file) {
-                    eprintln!("Warning: Failed to remove PID file: {}", e);
+        // Read PID file and send signal
+        if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                // Send SIGTERM
+                if let Err(e) = signal::kill(Pid::from_raw(pid), signal::Signal::SIGTERM) {
+                    error!("Failed to send SIGTERM to process {}: {}", pid, e);
                 }
-                println!("Server stopped successfully");
-                return Ok(());
+
+                // Wait for server to stop with timeout
+                let start = std::time::Instant::now();
+                let timeout = std::time::Duration::from_secs(5);
+                while start.elapsed() < timeout {
+                    if !self.is_server_running() {
+                        break;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+
+                // If server hasn't stopped, send SIGKILL
+                if self.is_server_running() {
+                    error!("Server did not stop gracefully, sending SIGKILL");
+                    let _ = signal::kill(Pid::from_raw(pid), signal::Signal::SIGKILL);
+                }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
 
-        println!("Warning: Server did not stop gracefully");
+        // Clean up PID file
+        if let Err(e) = fs::remove_file(&self.pid_file) {
+            error!("Failed to remove PID file: {}", e);
+        }
+
+        println!("Server stopped");
         Ok(())
     }
 
-    async fn handle_status(&self) -> Result<(), NexaError> {
+    pub async fn status(&self) -> Result<(), NexaError> {
         info!("Checking Nexa Core server status");
         
         let mut status = String::from("\nSystem Status:\n\n");
@@ -157,6 +176,10 @@ impl CliHandler {
         println!("{}", status);
         Ok(())
     }
+
+    pub fn get_pid_file_path(&self) -> &PathBuf {
+        &self.pid_file
+    }
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -164,9 +187,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let handler = CliHandler::new();
 
     match cli.command {
-        Commands::Start => handler.handle_start().await?,
-        Commands::Stop => handler.handle_stop().await?,
-        Commands::Status => handler.handle_status().await?,
+        Commands::Start => handler.start(None).await?,
+        Commands::Stop => handler.stop().await?,
+        Commands::Status => handler.status().await?,
     }
 
     Ok(())

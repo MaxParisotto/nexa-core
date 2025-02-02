@@ -1,12 +1,12 @@
 use tokio::sync::mpsc;
 use tracing::{debug, error};
-use std::time::Duration;
-use std::collections::HashMap;
+use crate::error::NexaError;
 use crate::mcp::buffer::MessageBuffer;
 use crate::mcp::cluster::ClusterManager;
 use crate::mcp::processor::{MessageProcessor, ProcessorConfig};
 use std::sync::Arc;
-use crate::error::NexaError;
+use std::time::Duration;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Configuration for cluster message processing
@@ -259,6 +259,18 @@ impl ClusterProcessor {
             }
         }
 
+        Ok(())
+    }
+
+    /// Rebalance nodes in the cluster to ensure even load distribution
+    /// TODO: This method will be used when implementing dynamic load balancing
+    #[allow(dead_code)]
+    async fn rebalance_nodes(&self) -> Result<(), NexaError> {
+        // Get node load information
+        let nodes = self.manager.get_active_nodes().await?;
+        
+        // TODO: Implement rebalancing logic
+        debug!("Rebalancing {} nodes", nodes.len());
         Ok(())
     }
 }
