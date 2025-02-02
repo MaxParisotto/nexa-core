@@ -1,4 +1,4 @@
-use nexa_core::cli::CliController;
+use nexa_core::cli::run;
 use std::error::Error;
 
 #[tokio::main]
@@ -8,9 +8,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_max_level(tracing::Level::TRACE)
         .init();
 
-    // Create and run CLI controller
-    let controller = CliController::new();
-    controller.run().await?;
+    // Run CLI handler
+    run().await?;
 
     Ok(())
 }

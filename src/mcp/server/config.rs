@@ -25,12 +25,12 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "127.0.0.1:0".to_string(),
+            bind_addr: "0.0.0.0:8080".to_string(),
             max_connections: 1000,
             connection_timeout: Duration::from_secs(30),
             health_check_interval: Duration::from_secs(30),
-            shutdown_timeout: Duration::from_secs(5),
-            runtime_dir: std::env::temp_dir(),
+            shutdown_timeout: Duration::from_secs(30),
+            runtime_dir: PathBuf::from("/tmp"),
             log_level: "info".to_string(),
             enable_metrics: true,
         }
@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = ServerConfig::default();
-        assert_eq!(config.bind_addr, "127.0.0.1:0");
+        assert_eq!(config.bind_addr, "0.0.0.0:8080");
         assert_eq!(config.max_connections, 1000);
         assert_eq!(config.connection_timeout, Duration::from_secs(30));
     }

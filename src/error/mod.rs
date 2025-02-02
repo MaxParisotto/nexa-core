@@ -29,6 +29,9 @@ pub enum NexaError {
 
     #[error("Server error: {0}")]
     Server(String),
+
+    #[error("Signal handler error: {0}")]
+    Signal(String),
 }
 
 impl NexaError {
@@ -58,6 +61,16 @@ impl NexaError {
 
     pub fn server<S: Into<String>>(msg: S) -> Self {
         Self::Server(msg.into())
+    }
+
+    pub fn signal<S: Into<String>>(msg: S) -> Self {
+        Self::Signal(msg.into())
+    }
+}
+
+impl From<ctrlc::Error> for NexaError {
+    fn from(err: ctrlc::Error) -> Self {
+        Self::Signal(format!("Signal handler error: {}", err))
     }
 }
 

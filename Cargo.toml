@@ -27,6 +27,7 @@ url = "2.5.4"
 utoipa = { version = "4.2.3", features = ["actix_extras"] }
 thiserror = "1.0.69"
 nix = { version = "0.27.1", features = ["process", "signal"] }
+ctrlc = "3.4.2"  # Added for signal handling
 # Added for cluster management
 raft = "0.7.0"  # For leader election and consensus
 hashring = "0.3.2"  # For consistent hashing
