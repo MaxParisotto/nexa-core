@@ -1295,6 +1295,7 @@ dependencies = [
  "raft",
  "rand",
  "reqwest",
+ "scopeguard",
  "serde",
  "serde_json",
  "serde_yaml",

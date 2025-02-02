@@ -55,22 +55,33 @@ impl CliHandler {
         Self { pid_file, server }
     }
 
-    pub fn is_server_running(&self) -> bool {
+    pub async fn is_server_running(&self) -> bool {
+        // First check if the PID file exists and process is running
         if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                return unsafe { libc::kill(pid, 0) == 0 };
+                if unsafe { libc::kill(pid, 0) } == 0 {
+                    // PID exists and process is running, now check if server is bound
+                    // Wait up to 1 second for the server to be ready
+                    return tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        self.server.wait_for_ready()
+                    ).await.unwrap_or(false);
+                }
             }
         }
         false
     }
 
     pub async fn start(&self, addr: Option<&str>) -> Result<(), NexaError> {
-        if self.is_server_running() {
+        if self.is_server_running().await {
             println!("Server is already running");
             return Ok(());
         }
 
-        // Write PID file
+        // Write PID file first
+        fs::create_dir_all(self.pid_file.parent().unwrap_or(&self.pid_file))
+            .map_err(|e| NexaError::system(format!("Failed to create parent directory: {}", e)))?;
+
         fs::write(&self.pid_file, process::id().to_string())
             .map_err(|e| NexaError::system(format!("Failed to write PID file: {}", e)))?;
 
@@ -84,13 +95,19 @@ impl CliHandler {
         })?;
 
         info!("Starting Nexa Core server");
-        self.server.start(addr).await?;
+        
+        // Start the server
+        if let Err(e) = self.server.start(addr).await {
+            // Clean up PID file on error
+            let _ = fs::remove_file(&self.pid_file);
+            return Err(e);
+        }
 
         Ok(())
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
-        if !self.is_server_running() {
+        if !self.is_server_running().await {
             println!("Server is not running");
             return Ok(());
         }
@@ -112,14 +129,14 @@ impl CliHandler {
                 let start = std::time::Instant::now();
                 let timeout = std::time::Duration::from_secs(5);
                 while start.elapsed() < timeout {
-                    if !self.is_server_running() {
+                    if !self.is_server_running().await {
                         break;
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
 
                 // If server hasn't stopped, send SIGKILL
-                if self.is_server_running() {
+                if self.is_server_running().await {
                     error!("Server did not stop gracefully, sending SIGKILL");
                     let _ = signal::kill(Pid::from_raw(pid), signal::Signal::SIGKILL);
                 }
@@ -149,7 +166,7 @@ impl CliHandler {
         status.push_str(&format!("Resource Usage:\n  CPU: {:.1}%\n  Memory: {:.1}%\n\n", 
             cpu_usage, memory_usage));
 
-        let is_running = self.is_server_running();
+        let is_running = self.is_server_running().await;
         status.push_str(&format!("Server Status: {} {}\n\n",
             if is_running { "🟢" } else { "🔴" },
             if is_running { "Running" } else { "Stopped" }

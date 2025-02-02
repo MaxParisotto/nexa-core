@@ -168,6 +168,11 @@ impl MessageProcessor {
             }
         }
     }
+
+    /// Check if the processor is running
+    pub fn is_running(&self) -> bool {
+        self.shutdown_tx.is_some() && !self.workers.is_empty()
+    }
 }
 
 impl std::fmt::Debug for MessageProcessor {

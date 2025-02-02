@@ -190,7 +190,70 @@ impl ServerControl {
             return Err(NexaError::system("Server is already running"));
         }
 
-        // Start message processor
+        // Configure server bind address if provided
+        if let Some(addr) = addr {
+            let mut config = self.server.get_config().await?;
+            config.bind_addr = addr.to_string();
+            self.server.set_config(config).await?;
+            debug!("Set server bind address to {}", addr);
+        }
+
+        // Start server first
+        let server = self.server.clone();
+        server.start().await?;
+
+        // Wait for server to be bound to an address and running
+        let timeout_duration = Duration::from_secs(10);
+        let start_time = tokio::time::Instant::now();
+        
+        loop {
+            if server.get_state().await == ServerState::Running {
+                if let Some(bound_addr) = server.get_bound_addr().await {
+                    info!("Server bound and running on {}", bound_addr);
+                    break;
+                }
+            }
+            
+            if start_time.elapsed() >= timeout_duration {
+                return Err(NexaError::system("Server failed to start within timeout"));
+            }
+            
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        // Store the handle for the main server task
+        let server_clone = self.server.clone();
+        let server_handle = tokio::spawn(async move {
+            // Keep checking server state and handle any necessary maintenance
+            loop {
+                match server_clone.get_state().await {
+                    ServerState::Running => {
+                        // Server is running normally, perform health check
+                        server_clone.check_health().await;
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    ServerState::Stopping => {
+                        info!("Server is stopping, exiting server task");
+                        break;
+                    }
+                    ServerState::Stopped => {
+                        info!("Server is stopped, exiting server task");
+                        break;
+                    }
+                    state => {
+                        debug!("Server in state: {:?}, checking more frequently", state);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
+            debug!("Server task completed");
+            Ok(())
+        });
+
+        // Store the handle
+        *self.server_handle.write().await = Some(server_handle);
+
+        // Now start message processor
         let mut processor = MessageProcessor::new(
             ProcessorConfig::default(),
             self.message_buffer.clone(),
@@ -228,35 +291,8 @@ impl ServerControl {
         // Start message cleanup task
         self.start_message_cleanup().await;
 
-        // Start server
-        let server = self.server.clone();
-        server.start().await?;
-
-        // Store the handle
-        *self.server_handle.write().await = Some(tokio::spawn(async move {
-            Ok(())
-        }));
-
-        // Poll the server state for up to 10 seconds until it becomes Running and has a bound address
-        let timeout_duration = Duration::from_secs(10);
-        let start_time = tokio::time::Instant::now();
-        
-        loop {
-            if self.server.get_state().await == ServerState::Running {
-                if let Some(bound_addr) = self.server.get_bound_addr().await {
-                    // Add a small delay to ensure the WebSocket server is fully initialized
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    info!("Server started successfully on {}", bound_addr);
-                    return Ok(());
-                }
-            }
-            
-            if start_time.elapsed() >= timeout_duration {
-                return Err(NexaError::system("Server failed to start within timeout"));
-            }
-            
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
+        info!("Server startup completed successfully");
+        Ok(())
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
@@ -283,6 +319,23 @@ impl ServerControl {
         if let Err(e) = self.server.stop().await {
             error!("Error stopping server: {}", e);
             return Err(e);
+        }
+
+        // Wait for server task to complete
+        if let Some(handle) = self.server_handle.write().await.take() {
+            debug!("Waiting for server task to complete");
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(result) => {
+                    if let Err(e) = result {
+                        error!("Server task failed during shutdown: {}", e);
+                    } else {
+                        debug!("Server task completed successfully");
+                    }
+                }
+                Err(_) => {
+                    error!("Server task shutdown timed out");
+                }
+            }
         }
         
         // Wait for server to stop with timeout
@@ -478,6 +531,26 @@ impl ServerControl {
     /// Get message processing alerts
     pub async fn get_message_alerts(&self) -> Result<Vec<metrics::ProcessingAlert>, NexaError> {
         Ok(self.alert_checker.check_alerts().await)
+    }
+
+    pub async fn wait_for_ready(&self) -> bool {
+        // First check if server is in running state
+        match self.server.get_state().await {
+            ServerState::Running => {
+                // Then check if it's bound to an address
+                if let Some(_addr) = self.server.get_bound_addr().await {
+                    // Finally check if message processor is ready
+                    if let Some(processor) = self.message_processor.read().await.as_ref() {
+                        // Check if processor is actually running
+                        if processor.is_running() {
+                            return true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        false
     }
 }
 

@@ -6,10 +6,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::sync::{RwLock, watch, Notify};
+use tokio::sync::{RwLock, Notify};
 use tokio::net::{TcpListener, TcpStream};
 use std::net::SocketAddr;
-use tracing::{error, info};
+use tracing::{error, info, debug};
 use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Message};
 use futures::stream::{SplitStream, SplitSink};
 use futures::StreamExt;
@@ -65,14 +65,19 @@ pub struct ServerMetrics {
     pub uptime: Duration,
 }
 
+#[derive(Debug)]
+struct ServerInternalState {
+    state: ServerState,
+    shutdown_requested: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Server {
     pid_file: PathBuf,
-    #[allow(dead_code)]
     socket_path: PathBuf,
     bound_addr: Arc<RwLock<Option<std::net::SocketAddr>>>,
-    state: Arc<RwLock<ServerState>>,
-    shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
+    state: Arc<RwLock<ServerInternalState>>,
+    shutdown_tx: Arc<tokio::sync::broadcast::Sender<()>>,
     active_connections: Arc<RwLock<u32>>,
     server_handle: Arc<RwLock<Option<tokio::task::JoinHandle<Result<(), NexaError>>>>>,
     ready_notify: Arc<Notify>,
@@ -80,24 +85,23 @@ pub struct Server {
     health_check_interval: Duration,
     max_connections: u32,
     connection_timeout: Duration,
-    #[allow(dead_code)]
-    state_change_tx: Arc<watch::Sender<ServerState>>,
-    #[allow(dead_code)]
-    state_change_rx: watch::Receiver<ServerState>,
     connected_clients: Arc<RwLock<HashMap<SocketAddr, SystemTime>>>,
     config: Arc<RwLock<ServerConfig>>,
 }
 
 impl Server {
     pub fn new(pid_file: PathBuf, socket_path: PathBuf) -> Self {
-        let (state_tx, state_rx) = watch::channel(ServerState::Stopped);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel(16);
         
         Self {
             pid_file,
             socket_path,
             bound_addr: Arc::new(RwLock::new(None)),
-            state: Arc::new(RwLock::new(ServerState::Stopped)),
-            shutdown_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            state: Arc::new(RwLock::new(ServerInternalState {
+                state: ServerState::Stopped,
+                shutdown_requested: false,
+            })),
+            shutdown_tx: Arc::new(shutdown_tx),
             active_connections: Arc::new(RwLock::new(0)),
             server_handle: Arc::new(RwLock::new(None)),
             ready_notify: Arc::new(Notify::new()),
@@ -112,8 +116,6 @@ impl Server {
             health_check_interval: Duration::from_secs(30),
             max_connections: 1000,
             connection_timeout: Duration::from_secs(30),
-            state_change_tx: Arc::new(state_tx),
-            state_change_rx: state_rx,
             connected_clients: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(RwLock::new(ServerConfig::default())),
         }
@@ -124,8 +126,13 @@ impl Server {
         Ok(config.clone())
     }
 
+    pub async fn set_config(&self, config: ServerConfig) -> Result<(), NexaError> {
+        *self.config.write().await = config;
+        Ok(())
+    }
+
     pub async fn get_state(&self) -> ServerState {
-        self.state.read().await.clone()
+        self.state.read().await.state.clone()
     }
 
     pub async fn get_bound_addr(&self) -> Option<std::net::SocketAddr> {
@@ -137,29 +144,25 @@ impl Server {
     }
 
     pub async fn start(&self) -> Result<(), NexaError> {
+        debug!("Starting server initialization");
         let mut state = self.state.write().await;
-        if *state != ServerState::Stopped {
+        if state.state != ServerState::Stopped {
             return Err(NexaError::server("Server is not in stopped state"));
         }
-        *state = ServerState::Starting;
+        state.state = ServerState::Starting;
         drop(state);
 
-        // Create runtime directory if it doesn't exist
+        // Create TCP listener
+        debug!("Creating TCP listener");
         let config = self.config.read().await;
-        tokio::fs::create_dir_all(&config.runtime_dir).await?;
-
-        // Write PID file
-        let pid = std::process::id().to_string();
-        tokio::fs::write(&self.pid_file, pid).await?;
-
-        // Create and bind TCP listener
-        let listener = TcpListener::bind(&config.bind_addr).await?;
+        let bind_addr = &config.bind_addr;
+        debug!("Attempting to bind to {}", bind_addr);
+        let listener = TcpListener::bind(bind_addr).await
+            .map_err(|e| NexaError::server(format!("Failed to bind to {}: {}", bind_addr, e)))?;
+        
         let local_addr = listener.local_addr()?;
         *self.bound_addr.write().await = Some(local_addr);
-
-        // Setup shutdown channel
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
-        *self.shutdown_tx.lock().await = Some(shutdown_tx);
+        debug!("Server bound to {}", local_addr);
 
         // Start server loop
         let server = Arc::new(self.clone());
@@ -167,23 +170,142 @@ impl Server {
             info!("Server starting on {}", local_addr);
             
             let mut interval = tokio::time::interval(server.health_check_interval);
+            let mut shutdown_rx = server.shutdown_tx.subscribe();
+            debug!("Server loop initialized");
             
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.recv() => {
-                        info!("Shutdown signal received");
-                        break;
-                    }
-                    Ok((socket, addr)) = listener.accept() => {
-                        if let Err(e) = server.handle_connection(socket, addr).await {
-                            error!("Failed to handle connection from {}: {}", addr, e);
-                            let mut metrics = server.metrics.write().await;
-                            metrics.failed_connections += 1;
-                            metrics.last_error = Some(e.to_string());
+            // Set server state to running before starting the loop
+            {
+                let mut state = server.state.write().await;
+                state.state = ServerState::Running;
+                state.shutdown_requested = false;
+                debug!("Server state set to running");
+            }
+            
+            // Create a channel for signaling the accept loop to stop
+            let (accept_stop_tx, accept_stop_rx) = tokio::sync::oneshot::channel();
+            
+            // Spawn the accept loop in a separate task
+            let server_clone = server.clone();
+            let accept_handle = tokio::spawn(async move {
+                let mut accept_stop_rx = accept_stop_rx;
+                loop {
+                    tokio::select! {
+                        accept_result = listener.accept() => {
+                            match accept_result {
+                                Ok((socket, addr)) => {
+                                    let state = server_clone.state.read().await;
+                                    if state.shutdown_requested {
+                                        debug!("Rejecting connection during shutdown");
+                                        continue;
+                                    }
+                                    drop(state);
+                                    
+                                    // Handle connection in a separate task
+                                    let server = server_clone.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = server.handle_connection(socket, addr).await {
+                                            error!("Error handling connection: {}", e);
+                                        }
+                                    });
+                                }
+                                Err(e) => {
+                                    error!("Error accepting connection: {}", e);
+                                    // Break if listener is closed
+                                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        _ = &mut accept_stop_rx => {
+                            debug!("Accept loop received stop signal");
+                            // Drop the listener to force any pending accepts to fail
+                            drop(listener);
+                            break;
                         }
                     }
+                }
+                debug!("Accept loop exited");
+            });
+            
+            // Main server loop
+            loop {
+                tokio::select! {
+                    Ok(()) = shutdown_rx.recv() => {
+                        info!("Shutdown signal received in server loop");
+                        // Set state to stopping
+                        {
+                            let mut state = server.state.write().await;
+                            state.state = ServerState::Stopping;
+                            state.shutdown_requested = true;
+                            debug!("Server state set to stopping");
+                        }
+                        
+                        // Signal the accept loop to stop
+                        let _ = accept_stop_tx.send(());
+                        
+                        // Wait for accept loop to finish with timeout
+                        match tokio::time::timeout(Duration::from_secs(5), accept_handle).await {
+                            Ok(result) => {
+                                if let Err(e) = result {
+                                    error!("Accept loop failed during shutdown: {}", e);
+                                } else {
+                                    debug!("Accept loop completed successfully");
+                                }
+                            }
+                            Err(_) => {
+                                error!("Accept loop shutdown timed out");
+                            }
+                        }
+
+                        // Set final state
+                        {
+                            let mut state = server.state.write().await;
+                            state.state = ServerState::Stopped;
+                            state.shutdown_requested = false;
+                            debug!("Server state set to stopped");
+                        }
+
+                        // Clear bound address
+                        *server.bound_addr.write().await = None;
+                        debug!("Cleared bound address");
+
+                        // Clear any remaining connections
+                        {
+                            let mut clients = server.connected_clients.write().await;
+                            clients.clear();
+                            *server.active_connections.write().await = 0;
+                            debug!("Cleared all connections");
+                        }
+
+                        debug!("Server loop exited");
+                        break;
+                    }
                     _ = interval.tick() => {
-                        server.check_health().await;
+                        let state = server.state.read().await;
+                        if state.shutdown_requested {
+                            debug!("Skipping health check during shutdown");
+                            continue;
+                        }
+                        drop(state);
+                        
+                        // Perform health check
+                        let now = SystemTime::now();
+                        {
+                            let mut clients = server.connected_clients.write().await;
+                            clients.retain(|_, last_seen| {
+                                now.duration_since(*last_seen)
+                                    .map(|duration| duration < server.connection_timeout)
+                                    .unwrap_or(false)
+                            });
+                            
+                            // Update metrics
+                            let mut metrics = server.metrics.write().await;
+                            metrics.active_connections = clients.len() as u32;
+                            if let Ok(duration) = now.duration_since(metrics.start_time) {
+                                metrics.uptime = duration;
+                            }
+                        }
                     }
                 }
             }
@@ -191,52 +313,122 @@ impl Server {
             Ok(())
         });
 
+        // Store server handle
         *self.server_handle.write().await = Some(handle);
-        *self.state.write().await = ServerState::Running;
-        self.ready_notify.notify_waiters();
+        debug!("Server handle stored");
 
+        // Notify waiters
+        self.ready_notify.notify_waiters();
+        debug!("Server initialization completed");
+
+        // Return success
         Ok(())
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
-        let mut state = self.state.write().await;
-        if *state != ServerState::Running {
-            return Err(NexaError::server("Server is not running"));
-        }
-        *state = ServerState::Stopping;
-        drop(state);
-
-        // Send shutdown signal
-        if let Some(tx) = self.shutdown_tx.lock().await.take() {
-            let _ = tx.send(()).await;
-        }
-
-        // Wait for server to stop with timeout
-        let config = self.config.read().await;
-        if let Some(handle) = self.server_handle.write().await.take() {
-            match tokio::time::timeout(config.shutdown_timeout, handle).await {
-                Ok(result) => {
-                    if let Err(e) = result {
-                        error!("Server task failed during shutdown: {}", e);
-                    }
+        debug!("Starting server shutdown sequence");
+        // First check if we're already in a non-running state
+        {
+            let mut state = self.state.write().await;
+            match state.state {
+                ServerState::Stopped => {
+                    debug!("Server is already stopped");
+                    return Ok(());
                 }
-                Err(_) => {
-                    error!("Server shutdown timed out");
+                ServerState::Stopping => {
+                    debug!("Server is already in the process of stopping");
+                    return Ok(());
+                }
+                ServerState::Running => {
+                    debug!("Server is running, proceeding with shutdown");
+                    state.state = ServerState::Stopping;
+                    state.shutdown_requested = true;
+                }
+                _ => {
+                    return Err(NexaError::server("Server is not in a state that can be stopped"));
                 }
             }
         }
 
-        // Cleanup
-        if self.pid_file.exists() {
-            let _ = tokio::fs::remove_file(&self.pid_file).await;
+        // Send shutdown signal
+        debug!("Broadcasting shutdown signal");
+        let _ = self.shutdown_tx.send(());
+
+        // Wait for server task to complete with timeout
+        if let Some(handle) = self.server_handle.write().await.take() {
+            debug!("Waiting for server task to complete");
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(result) => {
+                    if let Err(e) = result {
+                        error!("Server task failed during shutdown: {}", e);
+                    } else {
+                        debug!("Server task completed successfully");
+                    }
+                }
+                Err(_) => {
+                    error!("Server task shutdown timed out");
+                }
+            }
         }
 
-        *self.state.write().await = ServerState::Stopped;
+        // Wait for server to stop with timeout
+        let mut retries = 10;
+        while retries > 0 {
+            {
+                let state = self.state.read().await;
+                if state.state == ServerState::Stopped {
+                    debug!("Server stopped successfully");
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            retries -= 1;
+        }
+
+        if retries == 0 {
+            error!("Server failed to stop within timeout");
+            return Err(NexaError::system("Server failed to stop within timeout"));
+        }
+
+        // Clear bound address
+        *self.bound_addr.write().await = None;
+        debug!("Cleared bound address");
+
+        // Clear any remaining connections
+        {
+            let mut clients = self.connected_clients.write().await;
+            clients.clear();
+            *self.active_connections.write().await = 0;
+            debug!("Cleared all connections");
+        }
+
+        // Cleanup
+        debug!("Cleaning up server resources");
+        if self.pid_file.exists() {
+            if let Err(e) = tokio::fs::remove_file(&self.pid_file).await {
+                error!("Failed to remove PID file: {}", e);
+            } else {
+                debug!("PID file removed");
+            }
+        } else {
+            debug!("No PID file to remove");
+        }
+
+        if self.socket_path.exists() {
+            if let Err(e) = tokio::fs::remove_file(&self.socket_path).await {
+                error!("Failed to remove socket file: {}", e);
+            } else {
+                debug!("Socket file removed");
+            }
+        } else {
+            debug!("No socket file to remove");
+        }
+
         Ok(())
     }
 
-    async fn handle_connection(&self, socket: TcpStream, addr: SocketAddr) -> Result<(), NexaError> {
-        let active_conns = self.get_active_connections().await;
+    pub async fn handle_connection(&self, socket: TcpStream, addr: SocketAddr) -> Result<(), NexaError> {
+        let active_conns = *self.active_connections.read().await;
         
         if active_conns >= self.max_connections {
             return Err(NexaError::server("Maximum connections reached"));
@@ -318,7 +510,7 @@ impl Server {
         Ok(())
     }
 
-    async fn check_health(&self) {
+    pub async fn check_health(&self) {
         let now = SystemTime::now();
         let mut clients = self.connected_clients.write().await;
         
