@@ -1,10 +1,13 @@
-use iced::widget::{container, row, text, Column, button};
-use iced::{Element, Length, Application, Command, Theme, Color, Subscription, time, window};
-use iced::window::Settings as WindowSettings;
+use iced::widget::{container, row, text, Column, Button};
+use iced::{Element, Length, Theme, Color, Subscription, Command};
+use iced::executor;
+use iced::window;
+use iced::{Application, Settings};
 use std::sync::Arc;
 use std::time::Duration;
 use crate::server::{Server, ServerMetrics};
-use log::{info, error};
+use crate::error::NexaError;
+use log::info;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -21,6 +24,7 @@ pub struct NexaApp {
     failed_connections: u64,
     last_error: Option<String>,
     uptime: Duration,
+    should_exit: bool,
 }
 
 impl NexaApp {
@@ -34,6 +38,7 @@ impl NexaApp {
             failed_connections: 0,
             last_error: None,
             uptime: Duration::from_secs(0),
+            should_exit: false,
         }
     }
 
@@ -81,9 +86,8 @@ impl NexaApp {
                 text(format!("Uptime: {:?}", self.uptime))
             )
             .push(
-                button("Exit")
+                Button::new("Exit")
                     .on_press(Message::Exit)
-                    .style(iced::theme::Button::Destructive)
             );
 
         container(content)
@@ -103,7 +107,7 @@ pub struct NexaGui {
 impl Application for NexaGui {
     type Message = Message;
     type Theme = Theme;
-    type Executor = iced::executor::Default;
+    type Executor = executor::Default;
     type Flags = Arc<Server>;
 
     fn new(flags: Self::Flags) -> (Self, Command<Message>) {
@@ -111,7 +115,7 @@ impl Application for NexaGui {
         
         (
             Self { app: Some(app) },
-            Command::perform(async {}, |_| Message::Tick),
+            Command::none(),
         )
     }
 
@@ -120,13 +124,16 @@ impl Application for NexaGui {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        time::every(Duration::from_secs(1)).map(|_| Message::Tick)
+        iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
         if let Some(app) = &mut self.app {
             match message {
                 Message::Tick => {
+                    if app.should_exit {
+                        return window::close();
+                    }
                     app.uptime += Duration::from_secs(1);
                     let server = app.server.clone();
                     Command::perform(async move {
@@ -146,7 +153,10 @@ impl Application for NexaGui {
                     }
                     Command::none()
                 }
-                Message::Exit => window::close(),
+                Message::Exit => {
+                    app.should_exit = true;
+                    Command::none()
+                }
             }
         } else {
             Command::none()
@@ -166,23 +176,10 @@ impl Application for NexaGui {
     }
 }
 
-pub fn run_gui(server: Arc<Server>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_gui(server: Arc<Server>) -> Result<(), NexaError> {
     info!("Starting Nexa GUI...");
-    let mut settings = iced::Settings::with_flags(server);
-    settings.window = WindowSettings {
-        size: (800, 600),
-        position: window::Position::Centered,
-        min_size: Some((400, 300)),
-        resizable: true,
-        decorations: true,
-        transparent: false,
-        ..WindowSettings::default()
-    };
+    let settings = Settings::with_flags(server);
 
-    if let Err(e) = NexaGui::run(settings) {
-        error!("Failed to run GUI: {}", e);
-        return Err(Box::new(e));
-    }
-
-    Ok(())
+    NexaGui::run(settings)
+        .map_err(|e| NexaError::System(format!("Failed to run GUI: {}", e)))
 } 

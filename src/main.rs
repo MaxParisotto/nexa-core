@@ -56,12 +56,15 @@ async fn main() -> Result<(), NexaError> {
             let server = Arc::new(handler.get_server().clone());
             debug!("Server reference created");
 
-            // Run GUI
+            // Run GUI in a blocking context
             info!("Starting GUI event loop");
-            if let Err(e) = gui::run_gui(server) {
-                error!("GUI error: {}", e);
-                return Err(NexaError::System(format!("Failed to start GUI: {}", e)));
-            }
+            tokio::task::block_in_place(|| {
+                if let Err(e) = gui::run_gui(server) {
+                    error!("GUI error: {}", e);
+                    return Err(NexaError::System(format!("Failed to start GUI: {}", e)));
+                }
+                Ok(())
+            })?;
 
             info!("GUI closed, stopping server...");
             // Stop server on GUI exit
