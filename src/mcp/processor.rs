@@ -6,12 +6,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use num_cpus;
 
-#[cfg(test)]
-use {
-    uuid::Uuid,
-    crate::mcp::buffer::Priority,
-};
-
 /// Configuration for message processor
 #[derive(Debug, Clone)]
 pub struct ProcessorConfig {
@@ -184,6 +178,7 @@ mod tests {
     use super::*;
     use uuid::Uuid;
     use crate::mcp::buffer::Priority;
+    use std::time::UNIX_EPOCH;
 
     #[tokio::test]
     async fn test_message_processing() {
@@ -200,7 +195,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 payload: vec![1],
                 priority: Priority::Critical,
-                created_at: std::time::UNIX_EPOCH,
+                created_at: UNIX_EPOCH,
                 attempts: 0,
                 max_attempts: 3,
                 delay_until: None,
@@ -209,7 +204,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 payload: vec![2],
                 priority: Priority::High,
-                created_at: std::time::UNIX_EPOCH,
+                created_at: UNIX_EPOCH,
                 attempts: 0,
                 max_attempts: 3,
                 delay_until: None,

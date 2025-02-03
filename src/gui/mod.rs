@@ -1,9 +1,10 @@
 use iced::widget::{container, row, text, Column, button};
 use iced::{Element, Length, Application, Command, Theme, Color, Subscription, time, window};
+use iced::window::Settings as WindowSettings;
 use std::sync::Arc;
 use std::time::Duration;
 use crate::server::{Server, ServerMetrics};
-use log::info;
+use log::{info, error};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -163,4 +164,25 @@ impl Application for NexaGui {
     fn theme(&self) -> Theme {
         Theme::Dark
     }
+}
+
+pub fn run_gui(server: Arc<Server>) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Starting Nexa GUI...");
+    let mut settings = iced::Settings::with_flags(server);
+    settings.window = WindowSettings {
+        size: (800, 600),
+        position: window::Position::Centered,
+        min_size: Some((400, 300)),
+        resizable: true,
+        decorations: true,
+        transparent: false,
+        ..WindowSettings::default()
+    };
+
+    if let Err(e) = NexaGui::run(settings) {
+        error!("Failed to run GUI: {}", e);
+        return Err(Box::new(e));
+    }
+
+    Ok(())
 } 

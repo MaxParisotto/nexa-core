@@ -10,15 +10,6 @@ pub enum NexaError {
     #[error("Server error: {0}")]
     Server(String),
     
-    #[error("Memory error: {0}")]
-    Memory(String),
-    
-    #[error("Token error: {0}")]
-    Token(String),
-    
-    #[error("Monitoring error: {0}")]
-    Monitoring(String),
-    
     #[error("Protocol error: {0}")]
     Protocol(String),
     

@@ -9,7 +9,6 @@ use error::NexaError;
 use std::sync::Arc;
 use log::{info, error, debug};
 use env_logger::Env;
-use iced::{Application, Settings};
 
 #[tokio::main]
 async fn main() -> Result<(), NexaError> {
@@ -59,15 +58,7 @@ async fn main() -> Result<(), NexaError> {
 
             // Run GUI
             info!("Starting GUI event loop");
-            let mut settings = Settings::with_flags(server);
-            settings.window = iced::window::Settings {
-                size: (800, 600),
-                position: iced::window::Position::Centered,
-                min_size: Some((400, 300)),
-                ..Default::default()
-            };
-
-            if let Err(e) = gui::NexaGui::run(settings) {
+            if let Err(e) = gui::run_gui(server) {
                 error!("GUI error: {}", e);
                 return Err(NexaError::System(format!("Failed to start GUI: {}", e)));
             }
