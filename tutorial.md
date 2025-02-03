@@ -3,6 +3,7 @@
 This tutorial will guide you through using the Nexa Core system, including its LLM integration capabilities and cluster management features.
 
 ## Table of Contents
+
 - [Installation](#installation)
 - [Basic Usage](#basic-usage)
 - [LLM Integration](#llm-integration)
@@ -169,4 +170,4 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. 
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

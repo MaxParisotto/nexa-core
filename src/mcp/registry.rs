@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::agent::{Agent, Task, AgentStatus};
+use crate::types::{Agent, Task, AgentStatus};
 use crate::error::NexaError;
 
 /// Registry for managing connected agents

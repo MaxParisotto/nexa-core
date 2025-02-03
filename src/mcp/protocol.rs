@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
-use crate::agent::{Agent, Task, AgentStatus, TaskStatus};
+use crate::types::{Agent, Task, AgentStatus, TaskStatus};
 use crate::error::NexaError;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

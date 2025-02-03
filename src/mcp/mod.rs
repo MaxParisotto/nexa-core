@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
-use crate::agent::{Agent, Task, AgentStatus};
+use crate::types::{Agent, Task, AgentStatus};
 use std::sync::Arc;
 use std::collections::HashMap;
 use crate::error::NexaError;

@@ -36,7 +36,6 @@ Nexa Core is a comprehensive Rust-based utility library providing essential tool
 
 ## Project Structure
 
-```
 src/
 ├── agent/          # Agent management
 ├── cli/            # Command-line interface
@@ -50,7 +49,6 @@ src/
 ├── monitoring/     # System monitoring
 ├── tokens/         # Token management
 └── utils/          # Utility functions
-```
 
 ## Setup Instructions
 

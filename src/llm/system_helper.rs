@@ -2,7 +2,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use crate::error::NexaError;
-use crate::agent::Task;
+use crate::types::Task;
 use crate::llm::{LLMClient, LLMConfig};
 use crate::mcp::ServerControl;
 use log::info;

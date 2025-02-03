@@ -16,6 +16,7 @@ use std::fs;
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use nix::libc;
+use crate::gui::TaskPriority;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -160,6 +161,27 @@ impl CliHandler {
         }
 
         println!("{}", status);
+        Ok(())
+    }
+
+    /// Creates a new agent with the given name and capabilities.
+    pub async fn create_agent(&self, name: String, capabilities: Vec<String>) -> Result<(), String> {
+        info!("Creating agent {} with capabilities: {:?}", name, capabilities);
+        // TODO: Implement actual agent creation
+        Ok(())
+    }
+
+    /// Creates a new task with the given description, priority and agent assignment.
+    pub async fn create_task(&self, description: String, priority: TaskPriority, agent_id: String) -> Result<(), String> {
+        info!("Creating task: {} with priority {:?} for agent {}", description, priority, agent_id);
+        // TODO: Implement actual task creation
+        Ok(())
+    }
+
+    /// Sets the maximum number of connections allowed.
+    pub async fn set_max_connections(&self, max: u32) -> Result<(), String> {
+        info!("Setting max connections to {}", max);
+        // TODO: Implement actual connection limit setting
         Ok(())
     }
 }

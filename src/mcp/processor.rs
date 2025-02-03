@@ -43,7 +43,7 @@ pub enum ProcessingResult {
 
 /// Message processor handles the processing of buffered messages
 pub struct MessageProcessor {
-    config: ProcessorConfig,
+    _config: ProcessorConfig,
     buffer: Arc<MessageBuffer>,
     workers: Vec<tokio::task::JoinHandle<()>>,
     shutdown_tx: Option<tokio::sync::mpsc::Sender<()>>,
@@ -53,7 +53,7 @@ impl MessageProcessor {
     /// Create a new message processor
     pub fn new(config: ProcessorConfig, buffer: Arc<MessageBuffer>) -> Self {
         Self {
-            config,
+            _config: config,
             buffer,
             workers: Vec::new(),
             shutdown_tx: None,
@@ -68,9 +68,9 @@ impl MessageProcessor {
         let shutdown_rx = Arc::new(tokio::sync::Mutex::new(shutdown_rx));
 
         // Spawn worker tasks
-        for worker_id in 0..self.config.worker_count {
+        for worker_id in 0..self._config.worker_count {
             let buffer = self.buffer.clone();
-            let config = self.config.clone();
+            let config = self._config.clone();
             let shutdown_rx = shutdown_rx.clone();
 
             let handle = tokio::spawn(async move {
@@ -80,7 +80,7 @@ impl MessageProcessor {
             self.workers.push(handle);
         }
 
-        info!("Started {} message processor workers", self.config.worker_count);
+        info!("Started {} message processor workers", self._config.worker_count);
         Ok(())
     }
 

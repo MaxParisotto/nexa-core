@@ -5,6 +5,7 @@ This tutorial will guide you through testing all features of the Nexa Core WebSo
 ## Prerequisites
 
 Install these tools before starting:
+
 ```bash
 # Install websocat for WebSocket testing
 curl -L https://github.com/vi/websocat/releases/download/v1.11.0/websocat.x86_64-unknown-linux-musl -o websocat
@@ -18,6 +19,7 @@ sudo apt-get install jq
 ## 1. Basic Server Operations
 
 ### Starting the Server
+
 ```bash
 # Start the server on default port
 ./target/release/nexa start
@@ -30,6 +32,7 @@ NEXA_MAX_CONNECTIONS=2000 NEXA_TIMEOUT=60 ./target/release/nexa start
 ```
 
 ### Checking Server Status
+
 ```bash
 # Get server status
 ./target/release/nexa status
@@ -39,6 +42,7 @@ NEXA_MAX_CONNECTIONS=2000 NEXA_TIMEOUT=60 ./target/release/nexa start
 ```
 
 ### Stopping the Server
+
 ```bash
 # Graceful shutdown
 ./target/release/nexa stop
@@ -50,12 +54,14 @@ NEXA_MAX_CONNECTIONS=2000 NEXA_TIMEOUT=60 ./target/release/nexa start
 ## 2. Testing WebSocket Connections
 
 ### Basic Connection Test
+
 ```bash
 # Open a WebSocket connection
 websocat ws://127.0.0.1:8080
 ```
 
 ### Send Test Messages
+
 ```bash
 # Send a simple JSON message
 echo '{"type":"test","message":"hello"}' | websocat ws://127.0.0.1:8080
@@ -65,6 +71,7 @@ echo '{"type":"test","message":"hello"}' | websocat ws://127.0.0.1:8080
 ```
 
 ### Testing Concurrent Connections
+
 ```bash
 # Open multiple connections (replace 8080 with your port)
 for i in {1..5}; do
@@ -75,6 +82,7 @@ done
 ```
 
 ### Testing Binary Messages
+
 ```bash
 # Send binary data
 echo -n "binary test" | base64 | websocat ws://127.0.0.1:8080 --binary
@@ -86,6 +94,7 @@ echo -n "binary test" | base64 | websocat ws://127.0.0.1:8080 --binary
 ## 3. Connection Management Tests
 
 ### Test Connection Timeout
+
 ```bash
 # Start server with short timeout
 NEXA_TIMEOUT=5 ./target/release/nexa start
@@ -96,6 +105,7 @@ websocat ws://127.0.0.1:8080
 ```
 
 ### Test Maximum Connections
+
 ```bash
 # Start server with low connection limit
 NEXA_MAX_CONNECTIONS=2 ./target/release/nexa start
@@ -111,6 +121,7 @@ done
 ## 4. State Management Tests
 
 ### Test State Transitions
+
 ```bash
 # Monitor state changes
 watch -n 1 './target/release/nexa status'
@@ -124,6 +135,7 @@ watch -n 1 './target/release/nexa status'
 ```
 
 ### Test Crash Recovery
+
 ```bash
 # Start server
 ./target/release/nexa start
@@ -141,6 +153,7 @@ cat /tmp/nexa-*.state
 ## 5. Monitoring Tests
 
 ### Check Metrics
+
 ```bash
 # Get current metrics
 ./target/release/nexa metrics
@@ -150,6 +163,7 @@ watch -n 1 './target/release/nexa metrics'
 ```
 
 ### Test Connection Statistics
+
 ```bash
 # In terminal 1: Start monitoring
 watch -n 1 './target/release/nexa metrics'
@@ -165,6 +179,7 @@ done
 ## 6. Cleanup and Maintenance
 
 ### Clean Stale Files
+
 ```bash
 # Remove PID and state files
 rm /tmp/nexa-*.pid /tmp/nexa-*.state
@@ -174,6 +189,7 @@ ls -la /tmp/nexa-*
 ```
 
 ### Check Server Logs
+
 ```bash
 # Run server with debug logging
 RUST_LOG=debug ./target/release/nexa start
@@ -187,6 +203,7 @@ RUST_LOG=trace ./target/release/nexa start
 ### Common Issues
 
 1. **Server Won't Start**
+
    ```bash
    # Check for existing instances
    ps aux | grep nexa
@@ -199,6 +216,7 @@ RUST_LOG=trace ./target/release/nexa start
    ```
 
 2. **Connection Issues**
+
    ```bash
    # Check if server is listening
    netstat -tulpn | grep nexa
@@ -208,6 +226,7 @@ RUST_LOG=trace ./target/release/nexa start
    ```
 
 3. **Performance Issues**
+
    ```bash
    # Check system resources
    top -p $(pgrep nexa)
@@ -217,6 +236,7 @@ RUST_LOG=trace ./target/release/nexa start
    ```
 
 ### Debug Mode
+
 ```bash
 # Run with full debug output
 RUST_LOG=debug,nexa_utils=trace ./target/release/nexa start
@@ -225,6 +245,7 @@ RUST_LOG=debug,nexa_utils=trace ./target/release/nexa start
 ## Advanced Usage
 
 ### Custom Message Formats
+
 ```bash
 # Send structured data
 echo '{
@@ -237,6 +258,7 @@ echo '{
 ```
 
 ### Load Testing
+
 ```bash
 # Simple load test script
 for i in {1..100}; do
@@ -248,4 +270,4 @@ done
 ```
 
 ---
-*Note: Replace port numbers (8080) with your actual server port if different.* 
+*Note: Replace port numbers (8080) with your actual server port if different.*

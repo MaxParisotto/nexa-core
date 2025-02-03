@@ -1,4 +1,4 @@
-use iced::widget::{container, row, text, Column, Button, scrollable, Scrollable, Rule};
+use iced::widget::{container, row, text, Column, Button, scrollable, Rule, TextInput, PickList};
 use iced::{Element, Length, Theme, Color, Subscription, Command};
 use iced::executor;
 use iced::window;
@@ -6,10 +6,13 @@ use iced::{Application, Settings};
 use std::sync::Arc;
 use std::time::Duration;
 use std::collections::VecDeque;
-use crate::server::{Server, ServerMetrics};
+use crate::server::ServerMetrics;
 use crate::error::NexaError;
 use crate::cli::CliHandler;
-use log::{info, error};
+use crate::{Agent, Task, AgentStatus, TaskStatus};
+use log::info;
+use chrono::Utc;
+use std::ops::Deref;
 
 const MAX_LOG_ENTRIES: usize = 100;
 
@@ -22,6 +25,50 @@ pub enum Message {
     ServerStarted(bool, Option<String>),
     ServerStopped(bool, Option<String>),
     Exit,
+    // Agent management
+    CreateAgent,
+    AgentNameChanged(String),
+    AgentCapabilitiesChanged(String),
+    AgentCreated(Result<(), String>),
+    // Task management
+    CreateTask,
+    TaskDescriptionChanged(String),
+    TaskPriorityChanged(TaskPriority),
+    TaskAssignedAgent(String),
+    TaskCreated(Result<(), String>),
+    // Connection management
+    SetMaxConnections(String),
+    MaxConnectionsUpdated(Result<(), String>),
+    // View management
+    ChangeView(View),
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum View {
+    Overview,
+    Agents,
+    Tasks,
+    Connections,
+    Settings,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TaskPriority {
+    Low,
+    Normal,
+    High,
+    Critical,
+}
+
+impl std::fmt::Display for TaskPriority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskPriority::Low => write!(f, "Low"),
+            TaskPriority::Normal => write!(f, "Normal"),
+            TaskPriority::High => write!(f, "High"),
+            TaskPriority::Critical => write!(f, "Critical"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +97,20 @@ pub struct NexaApp {
     server_logs: VecDeque<LogEntry>,
     connection_logs: VecDeque<LogEntry>,
     error_logs: VecDeque<LogEntry>,
+    // Agent management
+    new_agent_name: String,
+    new_agent_capabilities: String,
+    agents: Vec<Agent>,
+    agent_options: Vec<String>,
+    // Task management
+    new_task_description: String,
+    new_task_priority: TaskPriority,
+    selected_agent: Option<String>,
+    tasks: Vec<Task>,
+    // Connection management
+    max_connections_input: String,
+    // View management
+    current_view: View,
 }
 
 impl NexaApp {
@@ -67,6 +128,16 @@ impl NexaApp {
             server_logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
             connection_logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
             error_logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            new_agent_name: String::new(),
+            new_agent_capabilities: String::new(),
+            agents: Vec::new(),
+            agent_options: Vec::new(),
+            new_task_description: String::new(),
+            new_task_priority: TaskPriority::Normal,
+            selected_agent: None,
+            tasks: Vec::new(),
+            max_connections_input: String::new(),
+            current_view: View::Overview,
         }
     }
 
@@ -119,24 +190,166 @@ impl NexaApp {
         .into()
     }
 
-    pub fn view(&self) -> Element<Message> {
-        let status_color = match self.server_status.as_str() {
-            "Running" => Color::from_rgb(0.0, 0.8, 0.0),
-            "Stopped" => Color::from_rgb(0.8, 0.0, 0.0),
-            _ => Color::from_rgb(0.8, 0.8, 0.0),
+    fn view_navigation(&self) -> Element<Message> {
+        let nav_button = |label: &str, view: View| {
+            let style = if self.current_view == view {
+                iced::theme::Button::Primary
+            } else {
+                iced::theme::Button::Secondary
+            };
+
+            Button::new(text(label))
+                .on_press(Message::ChangeView(view))
+                .style(style)
         };
 
-        // Status Section
-        let status_section = Column::new()
-            .spacing(10)
+        row![
+            nav_button("Overview", View::Overview),
+            nav_button("Agents", View::Agents),
+            nav_button("Tasks", View::Tasks),
+            nav_button("Connections", View::Connections),
+            nav_button("Settings", View::Settings),
+        ]
+        .spacing(10)
+        .padding(10)
+        .into()
+    }
+
+    fn view_agents(&self) -> Element<Message> {
+        let mut content = Column::new()
+            .spacing(20)
+            .push(text("Agent Management").size(24))
             .push(
-                text("Server Status").size(24)
-            )
+                Column::new()
+                    .spacing(10)
+                    .push(text("Create New Agent"))
+                    .push(
+                        TextInput::new("Enter agent name...", &self.new_agent_name)
+                            .on_input(Message::AgentNameChanged)
+                    )
+                    .push(
+                        TextInput::new("Enter capabilities (comma-separated)...", &self.new_agent_capabilities)
+                            .on_input(Message::AgentCapabilitiesChanged)
+                    )
+                    .push(
+                        Button::new("Create Agent")
+                            .on_press(Message::CreateAgent)
+                    )
+            );
+
+        // List existing agents
+        content = content.push(Rule::horizontal(10))
+            .push(text("Existing Agents").size(20));
+
+        for agent in &self.agents {
+            content = content.push(
+                container(
+                    Column::new()
+                        .spacing(5)
+                        .push(text(&format!("Name: {}", agent.id)))
+                        .push(text(&format!("Status: {:?}", agent.status)))
+                        .push(text(&format!("Capabilities: {}", agent.capabilities.join(", "))))
+                )
+                .padding(10)
+                .style(iced::theme::Container::Box)
+            );
+        }
+
+        scrollable(content).height(Length::Fill).into()
+    }
+
+    fn view_tasks(&self) -> Element<Message> {
+        let mut content = Column::new()
+            .spacing(20)
+            .push(text("Task Management").size(24))
             .push(
-                text(&format!("Status: {}", self.server_status))
-                    .style(status_color)
-                    .size(20)
+                Column::new()
+                    .spacing(10)
+                    .push(text("Create New Task"))
+                    .push(
+                        TextInput::new("Enter task description...", &self.new_task_description)
+                            .on_input(Message::TaskDescriptionChanged)
+                    )
+                    .push(
+                        PickList::new(
+                            &[TaskPriority::Low, TaskPriority::Normal, TaskPriority::High, TaskPriority::Critical][..],
+                            Some(self.new_task_priority),
+                            Message::TaskPriorityChanged,
+                        )
+                    )
+                    .push(
+                        PickList::new(
+                            &self.agent_options,
+                            self.selected_agent.clone(),
+                            Message::TaskAssignedAgent,
+                        )
+                    )
+                    .push(
+                        Button::new("Create Task")
+                            .on_press(Message::CreateTask)
+                    )
+            );
+
+        // List existing tasks
+        content = content.push(Rule::horizontal(10))
+            .push(text("Active Tasks").size(20));
+
+        for task in &self.tasks {
+            content = content.push(
+                container(
+                    Column::new()
+                        .spacing(5)
+                        .push(text(&format!("Description: {}", task.description)))
+                        .push(text(&format!("Priority: {}", task.priority)))
+                        .push(text(&format!("Status: {:?}", task.status)))
+                        .push(text(&format!("Assigned to: {}", task.assigned_agent.as_deref().unwrap_or("N/A"))))
+                        .push(text(&format!("Created: {}", task.created_at.format("%Y-%m-%d %H:%M:%S"))))
+                        .push(
+                            if let Some(deadline) = task.deadline {
+                                text(&format!("Deadline: {}", deadline.format("%Y-%m-%d %H:%M:%S")))
+                            } else {
+                                text("No deadline set")
+                            }
+                        )
+                )
+                .padding(10)
+                .style(iced::theme::Container::Box)
+            );
+        }
+
+        scrollable(content).height(Length::Fill).into()
+    }
+
+    fn view_connections(&self) -> Element<Message> {
+        Column::new()
+            .spacing(20)
+            .push(text("Connection Management").size(24))
+            .push(
+                Column::new()
+                    .spacing(10)
+                    .push(text("Connection Settings"))
+                    .push(
+                        TextInput::new("Enter max connections...", &self.max_connections_input)
+                            .on_input(Message::SetMaxConnections)
+                    )
             )
+            .push(Rule::horizontal(10))
+            .push(
+                Column::new()
+                    .spacing(5)
+                    .push(text(&format!("Active Connections: {}", self.active_connections)))
+                    .push(text(&format!("Total Connections: {}", self.total_connections)))
+                    .push(text(&format!("Failed Connections: {}", self.failed_connections)))
+            )
+            .push(Rule::horizontal(10))
+            .push(self.view_log_section("Connection Logs", &self.connection_logs))
+            .into()
+    }
+
+    fn view_settings(&self) -> Element<Message> {
+        Column::new()
+            .spacing(20)
+            .push(text("Server Settings").size(24))
             .push(
                 row![
                     if self.server_status == "Running" {
@@ -149,57 +362,77 @@ impl NexaApp {
                     Button::new("Exit")
                         .on_press(Message::Exit)
                 ].spacing(20)
-            );
-
-        // Metrics Section
-        let metrics_section = Column::new()
-            .spacing(10)
-            .push(text("Server Metrics").size(24))
-            .push(
-                container(Column::new()
-                    .spacing(5)
-                    .push(text(format!("Uptime: {:?}", self.uptime)))
-                    .push(text(format!("Total Connections: {}", self.total_connections)))
-                    .push(text(format!("Active Connections: {}", self.active_connections)))
-                    .push(text(format!("Failed Connections: {}", self.failed_connections)))
-                )
-                .padding(10)
-            );
-
-        // Error Section
-        let error_section = if let Some(error) = &self.last_error {
-            container(
-                text(format!("Error: {}", error))
-                    .style(Color::from_rgb(0.8, 0.0, 0.0))
             )
-            .padding(10)
-        } else {
-            container(text("No errors"))
-                .padding(10)
-        };
+            .push(Rule::horizontal(10))
+            .push(self.view_log_section("Server Logs", &self.server_logs))
+            .into()
+    }
 
-        // Main Layout
+    pub fn view(&self) -> Element<Message> {
         let content = Column::new()
             .spacing(20)
             .padding(20)
-            .push(status_section)
-            .push(Rule::horizontal(10))
-            .push(metrics_section)
-            .push(Rule::horizontal(10))
-            .push(error_section)
-            .push(Rule::horizontal(10))
+            .push(self.view_navigation())
             .push(
-                row![
-                    Column::new()
-                        .width(Length::FillPortion(1))
-                        .push(self.view_log_section("Server Logs", &self.server_logs)),
-                    Column::new()
-                        .width(Length::FillPortion(1))
-                        .push(self.view_log_section("Connection Logs", &self.connection_logs)),
-                    Column::new()
-                        .width(Length::FillPortion(1))
-                        .push(self.view_log_section("Error Logs", &self.error_logs)),
-                ].spacing(20)
+                match self.current_view {
+                    View::Overview => {
+                        let status_color = match self.server_status.as_str() {
+                            "Running" => Color::from_rgb(0.0, 0.8, 0.0),
+                            "Stopped" => Color::from_rgb(0.8, 0.0, 0.0),
+                            _ => Color::from_rgb(0.8, 0.8, 0.0),
+                        };
+
+                        Column::new()
+                            .spacing(20)
+                            .push(
+                                text(&format!("Status: {}", self.server_status))
+                                    .style(status_color)
+                                    .size(24)
+                            )
+                            .push(
+                                container(Column::new()
+                                    .spacing(5)
+                                    .push(text(format!("Uptime: {:?}", self.uptime)))
+                                    .push(text(format!("Total Connections: {}", self.total_connections)))
+                                    .push(text(format!("Active Connections: {}", self.active_connections)))
+                                    .push(text(format!("Failed Connections: {}", self.failed_connections)))
+                                )
+                                .padding(10)
+                            )
+                            .push(Rule::horizontal(10))
+                            .push(
+                                if let Some(error) = &self.last_error {
+                                    container(
+                                        text(format!("Error: {}", error))
+                                            .style(Color::from_rgb(0.8, 0.0, 0.0))
+                                    )
+                                    .padding(10)
+                                } else {
+                                    container(text("No errors"))
+                                        .padding(10)
+                                }
+                            )
+                            .push(Rule::horizontal(10))
+                            .push(
+                                row![
+                                    Column::new()
+                                        .width(Length::FillPortion(1))
+                                        .push(self.view_log_section("Server Logs", &self.server_logs)),
+                                    Column::new()
+                                        .width(Length::FillPortion(1))
+                                        .push(self.view_log_section("Connection Logs", &self.connection_logs)),
+                                    Column::new()
+                                        .width(Length::FillPortion(1))
+                                        .push(self.view_log_section("Error Logs", &self.error_logs)),
+                                ].spacing(20)
+                            )
+                            .into()
+                    }
+                    View::Agents => self.view_agents(),
+                    View::Tasks => self.view_tasks(),
+                    View::Connections => self.view_connections(),
+                    View::Settings => self.view_settings(),
+                }
             );
 
         container(content)
@@ -333,6 +566,131 @@ impl Application for NexaGui {
                 }
                 Message::Exit => {
                     app.should_exit = true;
+                    Command::none()
+                }
+                Message::CreateAgent => {
+                    let name = app.new_agent_name.clone();
+                    let capabilities: Vec<String> = app.new_agent_capabilities
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().create_agent(name, capabilities).await
+                    }, Message::AgentCreated)
+                }
+                Message::AgentNameChanged(name) => {
+                    app.new_agent_name = name;
+                    Command::none()
+                }
+                Message::AgentCapabilitiesChanged(capabilities) => {
+                    app.new_agent_capabilities = capabilities;
+                    Command::none()
+                }
+                Message::AgentCreated(result) => {
+                    match result {
+                        Ok(_) => {
+                            app.agents.push(Agent {
+                                id: app.new_agent_name.clone(),
+                                name: app.new_agent_name.clone(),
+                                capabilities: app.new_agent_capabilities
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect(),
+                                status: AgentStatus::Idle,
+                                current_task: None,
+                                last_heartbeat: Utc::now(),
+                            });
+                            app.agent_options.push(app.new_agent_name.clone());
+                            app.new_agent_name.clear();
+                            app.new_agent_capabilities.clear();
+                            app.add_log("Agent created successfully".to_string(), LogLevel::Info, "server");
+                        },
+                        Err(e) => {
+                            app.add_log(format!("Failed to create agent: {}", e), LogLevel::Error, "error");
+                        }
+                    }
+                    Command::none()
+                }
+                Message::CreateTask => {
+                    let description = app.new_task_description.clone();
+                    let priority = app.new_task_priority;
+                    let agent_id = app.selected_agent.clone().unwrap_or_default();
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().create_task(description, priority, agent_id).await
+                    }, Message::TaskCreated)
+                }
+                Message::TaskDescriptionChanged(description) => {
+                    app.new_task_description = description;
+                    Command::none()
+                }
+                Message::TaskPriorityChanged(priority) => {
+                    app.new_task_priority = priority;
+                    Command::none()
+                }
+                Message::TaskAssignedAgent(agent_id) => {
+                    app.selected_agent = Some(agent_id);
+                    Command::none()
+                }
+                Message::TaskCreated(result) => {
+                    match result {
+                        Ok(_) => {
+                            let priority_val = match app.new_task_priority {
+                                TaskPriority::Low => 0,
+                                TaskPriority::Normal => 1,
+                                TaskPriority::High => 2,
+                                TaskPriority::Critical => 3,
+                            };
+                            app.tasks.push(Task {
+                                id: Utc::now().timestamp_millis().to_string(),
+                                title: app.new_task_description.clone(),
+                                description: app.new_task_description.clone(),
+                                status: TaskStatus::Pending,
+                                steps: Vec::new(),
+                                requirements: Vec::new(),
+                                assigned_agent: app.selected_agent.clone(),
+                                created_at: Utc::now(),
+                                deadline: None,
+                                priority: priority_val,
+                                estimated_duration: 3600,
+                            });
+                            app.new_task_description.clear();
+                            app.selected_agent = None;
+                            app.add_log("Task created successfully".to_string(), LogLevel::Info, "server");
+                        },
+                        Err(e) => {
+                            app.add_log(format!("Failed to create task: {}", e), LogLevel::Error, "error");
+                        }
+                    }
+                    Command::none()
+                }
+                Message::SetMaxConnections(input) => {
+                    app.max_connections_input = input.clone();
+                    if let Ok(max) = input.parse::<u32>() {
+                        let handler = app.handler.clone();
+                        Command::perform(async move {
+                            handler.deref().set_max_connections(max).await
+                        }, Message::MaxConnectionsUpdated)
+                    } else {
+                        Command::none()
+                    }
+                }
+                Message::MaxConnectionsUpdated(result) => {
+                    match result {
+                        Ok(_) => {
+                            app.add_log("Max connections updated successfully".to_string(), LogLevel::Info, "server");
+                        },
+                        Err(e) => {
+                            app.add_log(format!("Failed to update max connections: {}", e), LogLevel::Error, "error");
+                        }
+                    }
+                    Command::none()
+                }
+                Message::ChangeView(view) => {
+                    app.current_view = view;
                     Command::none()
                 }
             }

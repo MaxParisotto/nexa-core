@@ -1,5 +1,5 @@
 use utoipa::OpenApi;
-use crate::agent::{Agent, AgentStatus, Task};
+use crate::types::{Agent, AgentStatus, Task};
 use crate::monitoring::SystemMetrics;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
