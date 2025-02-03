@@ -83,9 +83,10 @@ impl TokenManager {
         if let Some(limit) = self.model_limits.get(&model) {
             let total = prompt_tokens + completion_tokens;
             if total > *limit {
-                return Err(NexaError::system(format!(
-                    "Token usage exceeds limit for {:?}: {} > {}",
-                    model, total, limit
+                return Err(NexaError::System(format!(
+                    "Token limit exceeded: {} > {}",
+                    total,
+                    limit
                 )));
             }
         }

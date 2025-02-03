@@ -87,7 +87,7 @@ impl MemoryManager {
         // Check resource limits
         if let Some(limit) = self.limits.get(&resource_type) {
             if size > *limit {
-                return Err(NexaError::system(format!(
+                return Err(NexaError::System(format!(
                     "Memory allocation exceeds limit for {:?}: {} > {}",
                     resource_type, size, limit
                 )));
@@ -130,7 +130,7 @@ impl MemoryManager {
             stats.available = stats.total_allocated.saturating_sub(stats.total_used);
             Ok(())
         } else {
-            Err(NexaError::system(format!("No allocation found for id: {}", id)))
+            Err(NexaError::System(format!("No allocation found for id: {}", id)))
         }
     }
 

@@ -1,5 +1,5 @@
 use std::time::{Duration, SystemTime};
-use tracing::{debug, error, info};
+use log::{debug, error, info};
 use crate::error::NexaError;
 use crate::mcp::buffer::{BufferedMessage, MessageBuffer, Priority};
 use std::sync::Arc;

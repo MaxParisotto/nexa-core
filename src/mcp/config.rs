@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use crate::error::NexaError;
 use std::fs;
-use tracing::debug;
+use log::debug;
 use uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,64 +257,64 @@ impl ServerConfig {
     pub fn validate(&self) -> Result<(), NexaError> {
         // Validate bind address format
         if self.bind_addr.split(':').count() != 2 {
-            return Err(NexaError::system("Invalid bind address format"));
+            return Err(NexaError::System("Invalid bind address format".to_string()));
         }
 
         // Validate timeouts
         if self.connection_timeout_secs == 0 {
-            return Err(NexaError::system("Connection timeout cannot be zero"));
+            return Err(NexaError::System("Connection timeout cannot be zero".to_string()));
         }
 
         if self.health_check_interval_secs == 0 {
-            return Err(NexaError::system("Health check interval cannot be zero"));
+            return Err(NexaError::System("Health check interval cannot be zero".to_string()));
         }
 
         if self.shutdown_timeout_secs == 0 {
-            return Err(NexaError::system("Shutdown timeout cannot be zero"));
+            return Err(NexaError::System("Shutdown timeout cannot be zero".to_string()));
         }
 
         // Validate max connections
         if self.max_connections == 0 {
-            return Err(NexaError::system("Max connections cannot be zero"));
+            return Err(NexaError::System("Max connections cannot be zero".to_string()));
         }
 
         // Validate log level
         match self.log_level.to_lowercase().as_str() {
             "error" | "warn" | "info" | "debug" | "trace" => Ok(()),
-            _ => Err(NexaError::system("Invalid log level")),
+            _ => Err(NexaError::System("Invalid log level".to_string())),
         }?;
 
         // Validate runtime directory
         if !self.runtime_dir.exists() {
-            return Err(NexaError::system("Runtime directory does not exist"));
+            return Err(NexaError::System("Runtime directory does not exist".to_string()));
         }
 
         // Cluster validation
         if self.cluster.enabled {
             if self.cluster.heartbeat_interval_ms == 0 {
-                return Err(NexaError::system("Cluster heartbeat interval cannot be zero"));
+                return Err(NexaError::System("Cluster heartbeat interval cannot be zero".to_string()));
             }
 
             if self.cluster.election_timeout_ms <= self.cluster.heartbeat_interval_ms {
-                return Err(NexaError::system("Election timeout must be greater than heartbeat interval"));
+                return Err(NexaError::System("Election timeout must be greater than heartbeat interval".to_string()));
             }
 
             if self.cluster.quorum_size < 2 {
-                return Err(NexaError::system("Quorum size must be at least 2"));
+                return Err(NexaError::System("Quorum size must be at least 2".to_string()));
             }
         }
 
         // Load balancer validation
         if self.load_balancer.min_pool_size > self.load_balancer.max_pool_size {
-            return Err(NexaError::system("Min pool size cannot be greater than max pool size"));
+            return Err(NexaError::System("Min pool size cannot be greater than max pool size".to_string()));
         }
 
         if self.load_balancer.connection_timeout_ms == 0 {
-            return Err(NexaError::system("Load balancer connection timeout cannot be zero"));
+            return Err(NexaError::System("Load balancer connection timeout cannot be zero".to_string()));
         }
 
         if self.load_balancer.max_connection_lifetime_secs == 0 {
-            return Err(NexaError::system("Max connection lifetime cannot be zero"));
+            return Err(NexaError::System("Max connection lifetime cannot be zero".to_string()));
         }
 
         Ok(())
@@ -322,7 +322,7 @@ impl ServerConfig {
 
     pub fn to_cluster_config(&self) -> Result<ClusterConfig, NexaError> {
         if !self.cluster.enabled {
-            return Err(NexaError::system("Clustering is not enabled"));
+            return Err(NexaError::System("Clustering is not enabled".to_string()));
         }
         Ok(self.cluster.clone())
     }
@@ -333,19 +333,13 @@ impl ServerConfig {
 
     pub fn load_yaml(&mut self, path: &PathBuf) -> Result<(), NexaError> {
         let contents = fs::read_to_string(path)
-            .map_err(|err| NexaError::config(format!("Failed to read config file: {}", err)))?;
+            .map_err(|err| NexaError::Config(format!("Failed to read config file: {}", err)))?;
             
         let config: ServerConfig = serde_yaml::from_str(&contents)
-            .map_err(|err| NexaError::config(format!("YAML error: {}", err)))?;
+            .map_err(|err| NexaError::Config(format!("YAML error: {}", err)))?;
             
         // Update configuration
         *self = config;
         Ok(())
-    }
-}
-
-impl From<serde_yaml::Error> for NexaError {
-    fn from(err: serde_yaml::Error) -> Self {
-        NexaError::config(format!("YAML error: {}", err))
     }
 } 

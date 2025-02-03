@@ -18,7 +18,7 @@ use serde::{Serialize, Deserialize};
 use std::time::Duration;
 use sysinfo::System;
 use utoipa;
-use tracing::debug;
+use log::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SystemMetrics {
@@ -367,6 +367,73 @@ impl MonitoringSystem {
 impl Default for MonitoringSystem {
     fn default() -> Self {
         Self::new(Arc::new(MemoryManager::new()), Arc::new(TokenManager::new(Arc::new(MemoryManager::new()))))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceMetrics {
+    pub memory_usage_mb: f64,
+    pub cpu_usage_percent: f64,
+    pub error_rate: f64,
+    pub active_connections: u32,
+    pub requests_per_second: f64,
+}
+
+pub struct ResourceMonitor {
+    metrics: Arc<RwLock<ResourceMetrics>>,
+}
+
+impl ResourceMonitor {
+    pub fn new() -> Self {
+        Self {
+            metrics: Arc::new(RwLock::new(ResourceMetrics {
+                memory_usage_mb: 0.0,
+                cpu_usage_percent: 0.0,
+                error_rate: 0.0,
+                active_connections: 0,
+                requests_per_second: 0.0,
+            })),
+        }
+    }
+
+    pub async fn check_resources(&self) -> Result<(), NexaError> {
+        let metrics = self.metrics.read().await;
+        
+        if metrics.memory_usage_mb > 90.0 {
+            return Err(NexaError::System("Memory usage too high".to_string()));
+        }
+
+        if metrics.cpu_usage_percent > 80.0 {
+            return Err(NexaError::System("CPU usage too high".to_string()));
+        }
+
+        if metrics.error_rate > 0.1 {
+            return Err(NexaError::System("Error rate too high".to_string()));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_metrics(&self) -> Vec<String> {
+        let metrics = self.metrics.read().await;
+        vec![
+            format!("Memory Usage: {:.2} MB", metrics.memory_usage_mb),
+            format!("CPU Usage: {:.2}%", metrics.cpu_usage_percent),
+            format!("Error Rate: {:.4}", metrics.error_rate),
+            format!("Active Connections: {}", metrics.active_connections),
+            format!("Requests/sec: {:.2}", metrics.requests_per_second),
+        ]
+    }
+
+    pub async fn update_metrics(&self, new_metrics: ResourceMetrics) {
+        let mut metrics = self.metrics.write().await;
+        *metrics = new_metrics;
+    }
+}
+
+impl Default for ResourceMonitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

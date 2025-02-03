@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use chrono::{DateTime, Utc};
 use sha2::{Sha256, Digest};
-use tracing::{debug, warn};
+use log::warn;
 
 #[derive(Debug, Clone)]
 pub struct FrameMetadata {
@@ -11,7 +11,7 @@ pub struct FrameMetadata {
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameType {
     Code,
     Conversation,
@@ -63,7 +63,6 @@ impl EntropyTracker {
     }
 
     pub fn calculate_entropy(&mut self, content: &str) -> f32 {
-        // Simple Shannon entropy calculation
         let total_chars = content.len() as f32;
         let char_counts: std::collections::HashMap<char, usize> = 
             content.chars().fold(std::collections::HashMap::new(), |mut acc, c| {
@@ -107,7 +106,6 @@ impl EntropyTracker {
 pub struct ChangeDetector {
     last_hashes: VecDeque<String>,
     similarity_threshold: f32,
-    max_history: usize,
 }
 
 impl ChangeDetector {
@@ -115,7 +113,6 @@ impl ChangeDetector {
         Self {
             last_hashes: VecDeque::with_capacity(max_history),
             similarity_threshold,
-            max_history,
         }
     }
 
@@ -124,7 +121,6 @@ impl ChangeDetector {
     }
 
     fn calculate_similarity(&self, hash1: &str, hash2: &str) -> f32 {
-        // Simple Hamming distance-based similarity
         let matching_chars = hash1.chars().zip(hash2.chars())
             .filter(|(a, b)| a == b)
             .count();

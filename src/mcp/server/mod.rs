@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::{RwLock, watch, Notify};
 use tokio::net::{TcpListener, TcpStream};
 use std::net::SocketAddr;
-use tracing::{error, info};
+use log::{error, info};
 use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Message};
 use futures::stream::{SplitStream, SplitSink};
 use futures::StreamExt;
@@ -37,7 +37,7 @@ impl std::str::FromStr for ServerState {
             "stopping" => Ok(ServerState::Stopping),
             "maintenance" => Ok(ServerState::Maintenance),
             s if s.starts_with("error:") => Ok(ServerState::Error(s[6..].trim().to_string())),
-            _ => Err(NexaError::server(format!("Invalid server state: {}", s))),
+            _ => Err(NexaError::Server(format!("Invalid server state: {}", s))),
         }
     }
 }
@@ -139,7 +139,7 @@ impl Server {
     pub async fn start(&self) -> Result<(), NexaError> {
         let mut state = self.state.write().await;
         if *state != ServerState::Stopped {
-            return Err(NexaError::server("Server is not in stopped state"));
+            return Err(NexaError::Server("Server is not in stopped state".to_string()));
         }
         *state = ServerState::Starting;
         drop(state);
@@ -201,7 +201,7 @@ impl Server {
     pub async fn stop(&self) -> Result<(), NexaError> {
         let mut state = self.state.write().await;
         if *state != ServerState::Running {
-            return Err(NexaError::server("Server is not running"));
+            return Err(NexaError::Server("Server is not running".to_string()));
         }
         *state = ServerState::Stopping;
         drop(state);
@@ -239,7 +239,7 @@ impl Server {
         let active_conns = self.get_active_connections().await;
         
         if active_conns >= self.max_connections {
-            return Err(NexaError::server("Maximum connections reached"));
+            return Err(NexaError::Server("Maximum connections reached".to_string()));
         }
 
         // Configure socket

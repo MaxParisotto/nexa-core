@@ -10,7 +10,7 @@ use super::types::*;
 use crate::error::NexaError;
 use dashmap::DashMap;
 use tokio::sync::{RwLock, broadcast, mpsc};
-use tracing::{error, info};
+use log::{error, info};
 use uuid::Uuid;
 use std::time::SystemTime;
 use std::net::SocketAddr;
@@ -366,7 +366,7 @@ impl ClusterManager {
         // Then broadcast to other nodes
         if let Err(e) = self.message_tx.send(message) {
             error!("Failed to broadcast message: {}", e);
-            return Err(NexaError::cluster("Failed to broadcast message"));
+            return Err(NexaError::Cluster("Failed to broadcast message".to_string()));
         }
         Ok(())
     }

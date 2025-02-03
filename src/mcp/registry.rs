@@ -23,7 +23,7 @@ impl AgentRegistry {
     pub async fn register(&self, agent: Agent) -> Result<(), NexaError> {
         let mut agents = self.agents.write().await;
         if agents.contains_key(&agent.id) {
-            return Err(NexaError::agent("Agent already registered"));
+            return Err(NexaError::Agent("Agent already registered".to_string()));
         }
         agents.insert(agent.id.clone(), agent);
         Ok(())
@@ -33,7 +33,7 @@ impl AgentRegistry {
     pub async fn deregister(&self, agent_id: &str) -> Result<(), NexaError> {
         let mut agents = self.agents.write().await;
         if agents.remove(agent_id).is_none() {
-            return Err(NexaError::agent("Agent not found"));
+            return Err(NexaError::Agent("Agent not found".to_string()));
         }
         Ok(())
     }
@@ -44,7 +44,7 @@ impl AgentRegistry {
         agents
             .get(agent_id)
             .cloned()
-            .ok_or_else(|| NexaError::agent("Agent not found"))
+            .ok_or_else(|| NexaError::Agent("Agent not found".to_string()))
     }
 
     /// Update agent status
@@ -54,7 +54,7 @@ impl AgentRegistry {
             agent.status = status;
             Ok(())
         } else {
-            Err(NexaError::agent("Agent not found"))
+            Err(NexaError::Agent("Agent not found".to_string()))
         }
     }
 
@@ -91,7 +91,7 @@ impl AgentRegistry {
         tasks
             .get(id)
             .cloned()
-            .ok_or_else(|| NexaError::system(format!("Task not found: {}", id)))
+            .ok_or_else(|| NexaError::System(format!("Task not found: {}", id)))
     }
 
     pub async fn list_tasks(&self) -> Result<Vec<Task>, NexaError> {
@@ -111,11 +111,11 @@ impl AgentRegistry {
 
         let task = tasks
             .get_mut(task_id)
-            .ok_or_else(|| NexaError::system(format!("Task not found: {}", task_id)))?;
+            .ok_or_else(|| NexaError::System(format!("Task not found: {}", task_id)))?;
 
         let agent = agents
             .get_mut(agent_id)
-            .ok_or_else(|| NexaError::system(format!("Agent not found: {}", agent_id)))?;
+            .ok_or_else(|| NexaError::System(format!("Agent not found: {}", agent_id)))?;
 
         task.assigned_agent = Some(agent_id.to_string());
         agent.current_task = Some(task_id.to_string());
@@ -129,7 +129,7 @@ impl AgentRegistry {
 
         let task = tasks
             .get_mut(task_id)
-            .ok_or_else(|| NexaError::system(format!("Task not found: {}", task_id)))?;
+            .ok_or_else(|| NexaError::System(format!("Task not found: {}", task_id)))?;
 
         if let Some(agent_id) = &task.assigned_agent {
             if let Some(agent) = agents.get_mut(agent_id) {

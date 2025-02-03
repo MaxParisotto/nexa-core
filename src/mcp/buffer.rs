@@ -2,7 +2,7 @@ use tokio::sync::{mpsc, broadcast};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use parking_lot::RwLock;
-use tracing::{debug, error};
+use log::{debug, error};
 use serde::{Serialize, Deserialize};
 use std::time::{Duration, SystemTime};
 

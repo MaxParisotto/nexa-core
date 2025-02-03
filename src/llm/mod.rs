@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use std::time::Duration;
 use crate::error::NexaError;
-use tracing::debug;
+use log::debug;
 
 /// Server type for LLM requests
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,7 +207,7 @@ impl LLMClient {
 
         let client = client_builder
             .build()
-            .map_err(|e| NexaError::system(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| NexaError::System(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self { config, client })
     }
@@ -238,18 +238,18 @@ impl LLMClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| NexaError::system(format!("Failed to send request: {}", e)))?;
+            .map_err(|e| NexaError::System(format!("Failed to send request: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await
                 .unwrap_or_else(|_| "Failed to get error response".to_string());
-            return Err(NexaError::system(format!("LLM request failed ({}): {}", status, text)));
+            return Err(NexaError::System(format!("LLM request failed ({}): {}", status, text)));
         }
 
         let llm_response: LLMResponse = response.json()
             .await
-            .map_err(|e| NexaError::system(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| NexaError::System(format!("Failed to parse response: {}", e)))?;
 
         if let Some(usage) = llm_response.usage {
             debug!(
@@ -259,7 +259,7 @@ impl LLMClient {
         }
 
         Ok(llm_response.choices.first()
-            .ok_or_else(|| NexaError::system("No completion choices returned"))?
+            .ok_or_else(|| NexaError::System("No completion choices returned".to_string()))?
             .message.content.clone())
     }
 
@@ -281,18 +281,18 @@ impl LLMClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| NexaError::system(format!("Failed to send request to Ollama: {}", e)))?;
+            .map_err(|e| NexaError::System(format!("Failed to send request to Ollama: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await
                 .unwrap_or_else(|_| "Failed to get error response".to_string());
-            return Err(NexaError::system(format!("Ollama request failed ({}): {}", status, text)));
+            return Err(NexaError::System(format!("Ollama request failed ({}): {}", status, text)));
         }
 
         let ollama_response: OllamaResponse = response.json()
             .await
-            .map_err(|e| NexaError::system(format!("Failed to parse Ollama response: {}", e)))?;
+            .map_err(|e| NexaError::System(format!("Failed to parse Ollama response: {}", e)))?;
 
         if !ollama_response.done {
             debug!("Ollama response not marked as done, but proceeding with response");
@@ -311,7 +311,7 @@ impl LLMClient {
             "Call function '{}' with arguments: {}. Return ONLY a valid JSON object containing the result. For example, if calculating a sum, return: {{\"sum\": 42}}",
             function_name,
             serde_json::to_string(args)
-                .map_err(|e| NexaError::system(format!("Failed to serialize arguments: {}", e)))?
+                .map_err(|e| NexaError::System(format!("Failed to serialize arguments: {}", e)))?
         );
 
         let response = self.complete(&prompt).await?;
@@ -335,7 +335,7 @@ impl LLMClient {
         };
 
         serde_json::from_str(json_str)
-            .map_err(|e| NexaError::system(format!("Failed to parse function response: {}", e)))
+            .map_err(|e| NexaError::System(format!("Failed to parse function response: {}", e)))
     }
 
     /// Generate reasoning about a topic

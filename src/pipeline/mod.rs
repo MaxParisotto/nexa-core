@@ -1,25 +1,35 @@
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use log::{debug, warn};
+use crate::monitoring::ResourceMonitor;
 
-use crate::{
-    monitoring::ResourceMonitor,
-    validation::CodeValidator,
-    generation::CodeGenerator,
-};
+#[derive(Debug, Clone)]
+pub struct CodeRequest {
+    pub prompt: String,
+    pub language: String,
+    pub requirements: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneratedCode {
+    pub code: String,
+    pub language: String,
+    pub metrics: CodeMetrics,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeMetrics {
+    pub tokens_generated: u32,
+    pub generation_time_ms: u64,
+    pub memory_used_bytes: usize,
+}
 
 pub struct Pipeline {
-    generator: Arc<CodeGenerator<'static>>,
-    validator: Arc<Mutex<CodeValidator>>,
     monitor: ResourceMonitor,
     max_parallel_jobs: usize,
 }
 
 impl Pipeline {
-    pub fn new(generator: CodeGenerator<'static>, max_parallel_jobs: usize) -> Self {
+    pub fn new(max_parallel_jobs: usize) -> Self {
         Self {
-            generator: Arc::new(generator),
-            validator: Arc::new(Mutex::new(CodeValidator::new())),
             monitor: ResourceMonitor::new(),
             max_parallel_jobs,
         }
@@ -30,19 +40,21 @@ impl Pipeline {
         debug!("Starting pipeline job: {:?}", job.id);
 
         // Monitor resources
-        if !self.check_resources().await? {
+        if let Err(e) = self.monitor.check_resources().await {
+            warn!("Resource check failed: {}", e);
             return Err(PipelineError::ResourceExhausted);
         }
 
-        // Generate code
-        let code = self.generator.generate_code(job.request).await?;
-
-        // Validate output
-        let mut validator = self.validator.lock().await;
-        validator.validate(&code.code, &job.language)?;
-
-        // Update metrics
-        self.monitor.track_token_generation(code.metrics.tokens_generated as u64);
+        // For now, just return a dummy response
+        let code = GeneratedCode {
+            code: "// Generated code here".to_string(),
+            language: job.language.clone(),
+            metrics: CodeMetrics {
+                tokens_generated: 0,
+                generation_time_ms: start.elapsed().as_millis() as u64,
+                memory_used_bytes: 0,
+            },
+        };
 
         let duration = start.elapsed();
         debug!("Pipeline job {} completed in {:?}", job.id, duration);
@@ -51,23 +63,6 @@ impl Pipeline {
             code,
             duration: duration.as_millis() as u64,
         })
-    }
-
-    async fn check_resources(&self) -> Result<bool, PipelineError> {
-        let metrics = self.monitor.get_metrics_receiver();
-        let state = metrics.borrow();
-
-        if state.memory_usage_mb > 90.0 {
-            warn!("Memory usage too high: {}MB", state.memory_usage_mb);
-            return Ok(false);
-        }
-
-        if state.error_rate > 0.1 {
-            warn!("Error rate too high: {}", state.error_rate);
-            return Ok(false);
-        }
-
-        Ok(true)
     }
 }
 

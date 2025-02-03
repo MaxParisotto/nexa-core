@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use crate::error::NexaError;
 use std::fs;
-use tracing::debug;
+use log::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -135,10 +135,10 @@ impl Config {
         }
 
         let contents = fs::read_to_string(path)
-            .map_err(|e| NexaError::config(format!("Failed to read config file: {}", e)))?;
+            .map_err(|e| NexaError::Config(format!("Failed to read config file: {}", e)))?;
 
         serde_yaml::from_str(&contents)
-            .map_err(|e| NexaError::config(format!("Failed to parse config file: {}", e)))
+            .map_err(|e| NexaError::Config(format!("Failed to parse config file: {}", e)))
     }
 
     /// Save configuration to file
@@ -146,12 +146,12 @@ impl Config {
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
-                .map_err(|e| NexaError::config(format!("Failed to create config directory: {}", e)))?;
-        } // <-- Added missing closing brace
+                .map_err(|e| NexaError::Config(format!("Failed to create config directory: {}", e)))?;
+        }
         let contents = serde_yaml::to_string(&self)
-            .map_err(|e| NexaError::config(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| NexaError::Config(format!("Failed to serialize config: {}", e)))?;
         fs::write(path, contents)
-            .map_err(|e| NexaError::config(format!("Failed to write config file: {}", e)))?;
+            .map_err(|e| NexaError::Config(format!("Failed to write config file: {}", e)))?;
         Ok(())
     }
 

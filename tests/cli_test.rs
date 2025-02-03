@@ -1,4 +1,4 @@
-use tracing::info;
+use log::info;
 use once_cell::sync::OnceCell;
 use std::sync::atomic::{AtomicU16, Ordering};
 use nexa_core::cli::CliHandler;

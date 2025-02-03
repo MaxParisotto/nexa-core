@@ -32,7 +32,7 @@ use crate::monitoring::{
 };
 use crate::memory::{MemoryManager, MemoryStats, ResourceType};
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, error, info};
+use log::{debug, error, info};
 use chrono::Utc;
 use crate::tokens::{TokenManager, ModelType, TokenUsage};
 use crate::mcp::buffer::{MessageBuffer, BufferConfig, Priority, BufferedMessage};
@@ -187,7 +187,7 @@ impl ServerControl {
         // Early check: if server task already exists, then server is running
         if self.server_handle.read().await.is_some() {
             error!("Server is already running");
-            return Err(NexaError::system("Server is already running"));
+            return Err(NexaError::System("Server is already running".to_string()));
         }
 
         // Start message processor
@@ -252,7 +252,7 @@ impl ServerControl {
             }
             
             if start_time.elapsed() >= timeout_duration {
-                return Err(NexaError::system("Server failed to start within timeout"));
+                return Err(NexaError::System("Server failed to start within timeout".to_string()));
             }
             
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -301,12 +301,12 @@ impl ServerControl {
         }
 
         error!("Server failed to stop within timeout");
-        Err(NexaError::system("Server failed to stop within timeout"))
+        Err(NexaError::System("Server failed to stop within timeout".to_string()))
     }
 
     pub async fn get_bound_addr(&self) -> Result<std::net::SocketAddr, NexaError> {
         self.server.get_bound_addr().await
-            .ok_or_else(|| NexaError::system("Server address not available"))
+            .ok_or_else(|| NexaError::System("Server address not available".to_string()))
     }
 
     pub async fn get_state(&self) -> Result<ServerState, NexaError> {
@@ -438,7 +438,7 @@ impl ServerControl {
     /// Publish a message to the buffer
     pub async fn publish_message(&self, msg: BufferedMessage) -> Result<(), NexaError> {
         self.message_buffer.publish(msg).await
-            .map_err(|e| NexaError::system(format!("Failed to publish message: {}", e)))
+            .map_err(|e| NexaError::System(format!("Failed to publish message: {}", e)))
     }
 
     /// Subscribe to messages

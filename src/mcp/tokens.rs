@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
-use tracing::debug;
+use log::debug;
 use crate::memory::MemoryManager;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use tokio::net::TcpStream;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
-use tracing::{debug, error, warn};
+use log::{debug, error, warn};
 use crate::error::NexaError;
 
 #[derive(Debug, Clone)]
@@ -87,7 +87,7 @@ impl ConnectionPool {
             .clone()
             .acquire_owned()
             .await
-            .map_err(|e| NexaError::system(format!("Failed to acquire connection: {}", e)))?;
+            .map_err(|e| NexaError::System(format!("Failed to acquire connection: {}", e)))?;
 
         // First try to get an available connection
         if let Some(conn) = self.available.pop_front() {
@@ -114,7 +114,7 @@ impl ConnectionPool {
             return conn.get_stream().await;
         }
 
-        Err(NexaError::system("Connection pool exhausted"))
+        Err(NexaError::System("Connection pool exhausted".to_string()))
     }
 
     pub async fn release(&mut self, addr: SocketAddr, stream: TcpStream) {
@@ -130,7 +130,7 @@ impl ConnectionPool {
             self.connection_timeout,
             TcpStream::connect(addr)
         ).await
-        .map_err(|_| NexaError::system("Connection timeout"))??;
+        .map_err(|_| NexaError::System("Connection timeout".to_string()))??;
 
         Ok(PooledConnection {
             stream: Arc::new(stream),
@@ -188,7 +188,7 @@ impl LoadBalancer {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| NexaError::system("Failed to get connection")))
+        Err(last_error.unwrap_or_else(|| NexaError::System("Failed to get connection".to_string())))
     }
 
     pub async fn get_connection_for_server(&self, _server_id: &str, addr: SocketAddr) -> Result<TcpStream, NexaError> {

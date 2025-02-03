@@ -1,5 +1,5 @@
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use log::{debug, error};
 use crate::error::NexaError;
 use crate::mcp::buffer::MessageBuffer;
 use crate::mcp::cluster::ClusterManager;

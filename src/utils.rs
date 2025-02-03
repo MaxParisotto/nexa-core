@@ -3,7 +3,7 @@ use crate::error::NexaError;
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::{accept_async, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, error};
+use log::{debug, error};
 
 pub fn hello_world() -> &'static str {
     "Hello from nexa-utils!"
@@ -12,13 +12,13 @@ pub fn hello_world() -> &'static str {
 pub async fn create_ws_server(addr: &str) -> Result<TcpListener, NexaError> {
     TcpListener::bind(addr)
         .await
-        .map_err(|e| NexaError::system(&e.to_string()))
+        .map_err(|e| NexaError::System(e.to_string()))
 }
 
 pub async fn handle_ws_connection(stream: TcpStream) -> Result<(), NexaError> {
     let ws_stream = accept_async(stream)
         .await
-        .map_err(|e| NexaError::system(&e.to_string()))?;
+        .map_err(|e| NexaError::System(e.to_string()))?;
     
     debug!("New WebSocket connection established");
     handle_ws_messages(ws_stream).await
@@ -38,7 +38,7 @@ async fn handle_ws_messages(mut ws_stream: WebSocketStream<TcpStream>) -> Result
                         });
                         ws_stream.send(Message::Text(response.to_string()))
                             .await
-                            .map_err(|e| NexaError::system(&e.to_string()))?;
+                            .map_err(|e| NexaError::System(e.to_string()))?;
                     }
                     Message::Close(_) => {
                         debug!("Client initiated close");
@@ -53,13 +53,13 @@ async fn handle_ws_messages(mut ws_stream: WebSocketStream<TcpStream>) -> Result
                         });
                         ws_stream.send(Message::Text(response.to_string()))
                             .await
-                            .map_err(|e| NexaError::system(&e.to_string()))?;
+                            .map_err(|e| NexaError::System(e.to_string()))?;
                     }
                 }
             }
             Err(e) => {
                 error!("Error receiving message: {}", e);
-                return Err(NexaError::system(&e.to_string()));
+                return Err(NexaError::System(e.to_string()));
             }
         }
     }

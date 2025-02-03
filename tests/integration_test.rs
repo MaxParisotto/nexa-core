@@ -1,7 +1,7 @@
 use nexa_core::mcp::server::*;
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::info;
+use log::info;
 
 #[tokio::test]
 async fn test_server_startup() {

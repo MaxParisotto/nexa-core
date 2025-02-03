@@ -12,17 +12,15 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 test = "test -- --nocapture --test-threads=1 --show-output"
 
 [build]
-# Default target for cargo build
-target = ["x86_64-unknown-linux-gnu"]
+target-dir = "target"
 
-[target.x86_64-apple-darwin]
+[target.'cfg(target_os = "macos")']
 rustflags = [
-    "-C", "link-arg=-undefined",
-    "-C", "link-arg=dynamic_lookup",
+  "-C", "link-arg=-undefined",
+  "-C", "link-arg=dynamic_lookup",
 ]
 
-[target.aarch64-apple-darwin]
+[target.'cfg(target_os = "linux")']
 rustflags = [
-    "-C", "link-arg=-undefined",
-    "-C", "link-arg=dynamic_lookup",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN",
 ] 

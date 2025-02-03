@@ -122,25 +122,25 @@ impl Message {
 
     fn validate_registration(payload: &RegistrationPayload) -> Result<(), NexaError> {
         if payload.agent.id.is_empty() {
-            return Err(NexaError::protocol("Agent ID cannot be empty"));
+            return Err(NexaError::Protocol("Agent ID cannot be empty".to_string()));
         }
         Ok(())
     }
 
     fn validate_task_assignment(payload: &TaskAssignmentPayload) -> Result<(), NexaError> {
         if payload.agent_id.is_empty() {
-            return Err(NexaError::protocol("Agent ID cannot be empty"));
+            return Err(NexaError::Protocol("Agent ID cannot be empty".to_string()));
         }
         Ok(())
     }
 
     fn validate_task_update(payload: &TaskUpdatePayload) -> Result<(), NexaError> {
         if payload.task_id.is_empty() {
-            return Err(NexaError::protocol("Task ID cannot be empty"));
+            return Err(NexaError::Protocol("Task ID cannot be empty".to_string()));
         }
         if let Some(progress) = payload.progress {
-            if !(0.0..=100.0).contains(&progress) {
-                return Err(NexaError::protocol("Progress must be between 0 and 100"));
+            if progress < 0.0 || progress > 100.0 {
+                return Err(NexaError::Protocol("Progress must be between 0 and 100".to_string()));
             }
         }
         Ok(())

@@ -5,7 +5,7 @@ use crate::error::NexaError;
 use crate::agent::Task;
 use crate::llm::{LLMClient, LLMConfig};
 use crate::mcp::ServerControl;
-use tracing::info;
+use log::info;
 use chrono::{DateTime, Utc};
 
 /// System task request
@@ -107,7 +107,7 @@ impl SystemHelper {
         };
 
         let task_details: TaskDetails = serde_json::from_str(json_str)
-            .map_err(|e| NexaError::system(format!("Failed to parse task details: {}", e)))?;
+            .map_err(|e| NexaError::System(format!("Failed to parse task details: {}", e)))?;
 
         // Create task
         let task = Task::new(
@@ -251,7 +251,7 @@ impl SystemHelper {
         };
 
         let tasks: Vec<SystemTaskRequest> = serde_json::from_str(json_str)
-            .map_err(|e| NexaError::system(format!("Failed to parse task suggestions: {}", e)))?;
+            .map_err(|e| NexaError::System(format!("Failed to parse task suggestions: {}", e)))?;
 
         Ok(tasks)
     }

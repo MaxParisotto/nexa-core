@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use log::{debug, error, info};
 
 use crate::{
     capabilities::{Capability, CodeGeneration, CodeReview, TestGeneration},
