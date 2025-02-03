@@ -12,9 +12,7 @@ use crate::cli::CliHandler;
 use log::info;
 use chrono::Utc;
 use std::ops::Deref;
-
-#[path = "../types/mod.rs"]
-pub mod types;
+use crate::types::agent::{Agent, AgentStatus, Task, TaskStatus};
 
 const MAX_LOG_ENTRIES: usize = 100;
 
@@ -102,13 +100,13 @@ pub struct NexaApp {
     // Agent management
     new_agent_name: String,
     new_agent_capabilities: String,
-    agents: Vec<types::agent::Agent>,
+    agents: Vec<Agent>,
     agent_options: Vec<String>,
     // Task management
     new_task_description: String,
     new_task_priority: TaskPriority,
     selected_agent: Option<String>,
-    tasks: Vec<types::agent::Task>,
+    tasks: Vec<Task>,
     // Connection management
     max_connections_input: String,
     // View management
@@ -593,7 +591,7 @@ impl Application for NexaGui {
                 Message::AgentCreated(result) => {
                     match result {
                         Ok(_) => {
-                            app.agents.push(types::agent::Agent {
+                            app.agents.push(Agent {
                                 id: app.new_agent_name.clone(),
                                 name: app.new_agent_name.clone(),
                                 capabilities: app.new_agent_capabilities
@@ -601,7 +599,7 @@ impl Application for NexaGui {
                                     .map(|s| s.trim().to_string())
                                     .filter(|s| !s.is_empty())
                                     .collect(),
-                                status: types::agent::AgentStatus::Idle,
+                                status: AgentStatus::Idle,
                                 current_task: None,
                                 last_heartbeat: Utc::now(),
                             });
@@ -646,11 +644,11 @@ impl Application for NexaGui {
                                 TaskPriority::High => 2,
                                 TaskPriority::Critical => 3,
                             };
-                            app.tasks.push(types::agent::Task {
+                            app.tasks.push(Task {
                                 id: Utc::now().timestamp_millis().to_string(),
                                 title: app.new_task_description.clone(),
                                 description: app.new_task_description.clone(),
-                                status: types::agent::TaskStatus::Pending,
+                                status: TaskStatus::Pending,
                                 steps: Vec::new(),
                                 requirements: Vec::new(),
                                 assigned_agent: app.selected_agent.clone(),

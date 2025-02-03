@@ -4,6 +4,7 @@ use tokio_tungstenite::tungstenite;
 
 #[derive(Debug, Error)]
 pub enum NexaError {
+    /// Represents a system-level error
     #[error("System error: {0}")]
     System(String),
     

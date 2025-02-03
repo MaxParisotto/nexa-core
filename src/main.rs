@@ -12,10 +12,7 @@ use log::{info, error};
 use env_logger::Env;
 
 fn main() -> Result<(), NexaError> {
-    // Initialize logging with debug level and timestamp
-    env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
-        .format_timestamp_millis()
-        .init();
+    init_logging();
 
     let cli = cli::Cli::parse();
 
@@ -68,4 +65,10 @@ fn main() -> Result<(), NexaError> {
     }
 
     Ok(())
+}
+
+fn init_logging() {
+    env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
+        .format_timestamp_millis()
+        .init();
 } 
