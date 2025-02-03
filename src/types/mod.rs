@@ -1,5 +1,5 @@
-mod agent;
-mod cluster;
+pub mod agent;
+pub mod cluster;
 
 // Re-export all agent types
 pub use agent::*;

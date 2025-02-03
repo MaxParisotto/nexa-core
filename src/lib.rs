@@ -5,6 +5,7 @@ pub mod gui;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
+pub mod models;
 pub mod monitoring;
 pub mod pipeline;
 pub mod server;
@@ -13,7 +14,7 @@ pub mod utils;
 pub mod types;
 
 // Re-export commonly used types
-pub use types::{Agent, Task, AgentStatus, TaskStatus};
+pub use models::agent::{Agent, Task, AgentStatus, TaskStatus};
 pub use gui::TaskPriority;
 
 // Error type

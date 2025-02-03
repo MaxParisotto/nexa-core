@@ -2,6 +2,7 @@ mod server;
 mod error;
 mod cli;
 mod gui;
+pub mod types;
 
 use clap::Parser;
 use cli::CliHandler;
