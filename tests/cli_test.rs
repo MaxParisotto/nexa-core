@@ -33,7 +33,7 @@ async fn test_cli_handler() {
     let addr = format!("127.0.0.1:{}", port);
 
     // Create a new CLI handler
-    let cli = CliHandler::new_with_paths(pid_file, socket_path);
+    let cli = CliHandler::with_paths(pid_file, socket_path);
 
     // Test server status when not running
     info!("Testing server status when not running");

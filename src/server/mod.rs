@@ -70,7 +70,7 @@ impl Server {
     pub fn new(_pid_file: PathBuf, _socket_path: PathBuf) -> Self {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
-            port: 8080,
+            port: 8085,
             state: Arc::new(RwLock::new(ServerState::Stopped)),
             bound_addr: Arc::new(RwLock::new(None)),
             max_connections: 100,
@@ -87,7 +87,7 @@ impl Server {
 
         *self.state.write().await = ServerState::Starting;
 
-        let addr = format!("127.0.0.1:{}", self.port);
+        let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
         let bound_addr = listener.local_addr()?;
         *self.bound_addr.write().await = Some(bound_addr);
@@ -201,37 +201,4 @@ impl Server {
         }
         Ok(())
     }
-}
-
-pub async fn get_status() -> Result<String, NexaError> {
-    let mut status = String::new();
-    
-    // Get system info
-    let mut sys = sysinfo::System::new_all();
-    sys.refresh_all();
-    
-    let cpu_usage = sys.global_cpu_info().cpu_usage();
-    let memory_used = sys.used_memory();
-    let memory_total = sys.total_memory();
-    let memory_usage = (memory_used as f32 / memory_total as f32) * 100.0;
-
-    status.push_str(&format!("System Status:\n"));
-    status.push_str(&format!("CPU Usage: {:.1}%\n", cpu_usage));
-    status.push_str(&format!("Memory Usage: {:.1}%\n", memory_usage));
-    
-    Ok(status)
-}
-
-#[derive(Debug, Clone)]
-pub struct ServerConfig {
-    pub health_check_interval: std::time::Duration,
-    pub connection_timeout: std::time::Duration,
-}
-
-// Global server instance
-pub static SERVER: once_cell::sync::Lazy<Arc<Server>> = once_cell::sync::Lazy::new(|| {
-    Arc::new(Server::new(
-        PathBuf::from("/tmp/nexa.pid"),
-        PathBuf::from("/tmp/nexa.sock")
-    ))
-}); 
+} 

@@ -199,8 +199,8 @@ impl ClusterProcessor {
         let nodes = cluster.get_active_nodes().await?;
         let mut dist = distribution.write().await;
 
-        // Check each message's replication status
-        while let Some(msg) = buffer.pop_any() {
+        // Process all messages in buffer
+        while let Some(msg) = buffer.pop_any().await {
             let current_nodes = dist.get_nodes_for_message(&msg.id);
             
             // If message isn't replicated enough, send to more nodes

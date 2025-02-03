@@ -24,14 +24,12 @@ pub struct CodeMetrics {
 
 pub struct Pipeline {
     monitor: ResourceMonitor,
-    max_parallel_jobs: usize,
 }
 
 impl Pipeline {
-    pub fn new(max_parallel_jobs: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             monitor: ResourceMonitor::new(),
-            max_parallel_jobs,
         }
     }
 

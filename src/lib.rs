@@ -20,9 +20,9 @@ pub use server::Server;
 pub use config::Config;
 pub use memory::MemoryManager;
 pub use tokens::TokenManager;
-
-// Export the global server instance
-pub use server::SERVER;
+pub use mcp::registry::AgentRegistry;
+pub use mcp::protocol::ProtocolHandler;
+pub use mcp::cluster::manager::ClusterManager;
 
 #[cfg(test)]
 mod tests {

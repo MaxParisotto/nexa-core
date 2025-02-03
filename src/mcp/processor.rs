@@ -1,9 +1,16 @@
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use log::{debug, error, info};
 use crate::error::NexaError;
-use crate::mcp::buffer::{BufferedMessage, MessageBuffer, Priority};
+use crate::mcp::buffer::{BufferedMessage, MessageBuffer};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use num_cpus;
+
+#[cfg(test)]
+use {
+    uuid::Uuid,
+    crate::mcp::buffer::Priority,
+};
 
 /// Configuration for message processor
 #[derive(Debug, Clone)]
@@ -37,7 +44,7 @@ pub enum ProcessingResult {
     /// Message processing failed, should be retried
     RetryAfter(Duration),
     /// Message processing failed permanently
-    Failed(String),
+    Error(String),
 }
 
 /// Message processor handles the processing of buffered messages
@@ -45,7 +52,7 @@ pub struct MessageProcessor {
     config: ProcessorConfig,
     buffer: Arc<MessageBuffer>,
     workers: Vec<tokio::task::JoinHandle<()>>,
-    shutdown_tx: Option<mpsc::Sender<()>>,
+    shutdown_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl MessageProcessor {
@@ -98,7 +105,7 @@ impl MessageProcessor {
     async fn worker_loop(
         worker_id: usize,
         buffer: Arc<MessageBuffer>,
-        config: ProcessorConfig,
+        _config: ProcessorConfig,
         shutdown_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<()>>>,
     ) {
         let mut shutdown_rx = shutdown_rx.lock().await;
@@ -110,27 +117,18 @@ impl MessageProcessor {
                     break;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    // Try to get next message, starting with highest priority
-                    if let Some(msg) = buffer.pop_any() {
-                        match Self::process_message(msg.clone()).await {
+                    // Try to get next message
+                    if let Some(msg) = buffer.pop_any().await {
+                        // Process message
+                        match Self::process_message(msg).await {
                             ProcessingResult::Success => {
-                                debug!("Worker {} successfully processed message {}", worker_id, msg.id);
+                                debug!("Worker {} successfully processed message", worker_id);
+                            }
+                            ProcessingResult::Error(e) => {
+                                error!("Worker {} failed to process message: {}", worker_id, e);
                             }
                             ProcessingResult::RetryAfter(delay) => {
-                                if msg.attempts < config.max_retries {
-                                    let mut retry_msg = msg;
-                                    retry_msg.attempts += 1;
-                                    retry_msg.delay_until = Some(SystemTime::now() + delay);
-                                    
-                                    if let Err(e) = buffer.publish(retry_msg).await {
-                                        error!("Failed to requeue message: {}", e);
-                                    }
-                                } else {
-                                    error!("Message {} exceeded retry limit", msg.id);
-                                }
-                            }
-                            ProcessingResult::Failed(reason) => {
-                                error!("Failed to process message {}: {}", msg.id, reason);
+                                debug!("Worker {} will retry message after {:?}", worker_id, delay);
                             }
                         }
                     }
@@ -141,31 +139,32 @@ impl MessageProcessor {
 
     /// Process a single message
     async fn process_message(msg: BufferedMessage) -> ProcessingResult {
-        // TODO: Implement actual message processing logic
-        // This is a placeholder implementation
-        match msg.priority {
-            Priority::Critical => {
-                // Process critical messages immediately
-                ProcessingResult::Success
-            }
-            Priority::High => {
-                // Simulate some processing
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                ProcessingResult::Success
-            }
-            Priority::Normal => {
-                // Simulate occasional retry
-                if msg.attempts == 0 {
-                    ProcessingResult::RetryAfter(Duration::from_secs(1))
-                } else {
-                    ProcessingResult::Success
+        // Basic message processing logic
+        if msg.attempts >= 3 {
+            ProcessingResult::Error("Max attempts reached".to_string())
+        } else if msg.payload.is_empty() {
+            ProcessingResult::Error("Empty payload".to_string())
+        } else {
+            ProcessingResult::Success
+        }
+    }
+
+    pub async fn run(&mut self) {
+        loop {
+            if let Some(msg) = self.buffer.pop_any().await {
+                match Self::process_message(msg).await {
+                    ProcessingResult::Success => {
+                        debug!("Successfully processed message");
+                    }
+                    ProcessingResult::Error(e) => {
+                        error!("Failed to process message: {}", e);
+                    }
+                    ProcessingResult::RetryAfter(delay) => {
+                        debug!("Message will be retried after {:?}", delay);
+                    }
                 }
             }
-            Priority::Low => {
-                // Simulate longer processing
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                ProcessingResult::Success
-            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 }
@@ -173,7 +172,6 @@ impl MessageProcessor {
 impl std::fmt::Debug for MessageProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MessageProcessor")
-            .field("config", &self.config)
             .field("buffer", &self.buffer)
             .field("workers_count", &self.workers.len())
             .field("is_shutdown", &self.shutdown_tx.is_none())
@@ -185,6 +183,7 @@ impl std::fmt::Debug for MessageProcessor {
 mod tests {
     use super::*;
     use uuid::Uuid;
+    use crate::mcp::buffer::Priority;
 
     #[tokio::test]
     async fn test_message_processing() {
@@ -201,7 +200,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 payload: vec![1],
                 priority: Priority::Critical,
-                created_at: SystemTime::now(),
+                created_at: std::time::UNIX_EPOCH,
                 attempts: 0,
                 max_attempts: 3,
                 delay_until: None,
@@ -210,7 +209,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 payload: vec![2],
                 priority: Priority::High,
-                created_at: SystemTime::now(),
+                created_at: std::time::UNIX_EPOCH,
                 attempts: 0,
                 max_attempts: 3,
                 delay_until: None,
@@ -222,10 +221,13 @@ mod tests {
             buffer.publish(msg).await.unwrap();
         }
 
-        // Wait for processing
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Wait for processing with a shorter timeout
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Stop processor
+        // Stop processor and ensure it's stopped
         processor.stop().await.unwrap();
+        
+        // Add a small delay to ensure cleanup
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

@@ -44,10 +44,12 @@ pub struct CliHandler {
 impl CliHandler {
     pub fn new() -> Self {
         let pid_file = PathBuf::from("/tmp/nexa.pid");
-        let server = Server::new(
-            pid_file.clone(),
-            PathBuf::from("/tmp/nexa.sock"),
-        );
+        let socket_path = PathBuf::from("/tmp/nexa.sock");
+        Self::with_paths(pid_file, socket_path)
+    }
+
+    pub fn with_paths(pid_file: PathBuf, socket_path: PathBuf) -> Self {
+        let server = Server::new(pid_file.clone(), socket_path);
         Self { pid_file, server }
     }
 

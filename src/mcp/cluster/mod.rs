@@ -7,7 +7,7 @@
 //! - Health monitoring and failure detection
 
 mod types;
-mod manager;
+pub mod manager;
 
 // Re-export commonly used types
 pub use types::{

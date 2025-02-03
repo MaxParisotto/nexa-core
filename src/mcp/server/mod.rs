@@ -350,6 +350,12 @@ mod tests {
         
         let server = Server::new(pid_file, socket_path);
         
+        // Configure server to use a random available port
+        {
+            let mut config = server.config.write().await;
+            config.bind_addr = "127.0.0.1:0".to_string();
+        }
+        
         // Test start
         assert!(server.start().await.is_ok());
         assert_eq!(server.get_state().await, ServerState::Running);

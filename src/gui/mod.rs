@@ -1,83 +1,166 @@
-use eframe::egui;
-use crate::server::Server;
+use iced::widget::{container, row, text, Column, button};
+use iced::{Element, Length, Application, Command, Theme, Color, Subscription, time, window};
 use std::sync::Arc;
-use tokio::runtime::Runtime;
+use std::time::Duration;
+use crate::server::{Server, ServerMetrics};
+use log::info;
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Tick,
+    UpdateState(String, usize, ServerMetrics),
+    Exit,
+}
 
 pub struct NexaApp {
-    server_status: String,
     server: Arc<Server>,
-    runtime: Runtime,
+    server_status: String,
+    total_connections: u64,
+    active_connections: u32,
+    failed_connections: u64,
+    last_error: Option<String>,
+    uptime: Duration,
 }
 
 impl NexaApp {
     pub fn new(server: Arc<Server>) -> Self {
+        info!("Creating new NexaApp instance");
         Self {
-            server_status: "Connected".to_string(),
             server,
-            runtime: Runtime::new().unwrap(),
+            server_status: "Initializing...".to_string(),
+            total_connections: 0,
+            active_connections: 0,
+            failed_connections: 0,
+            last_error: None,
+            uptime: Duration::from_secs(0),
         }
+    }
+
+    pub fn view(&self) -> Element<Message> {
+        let status_color = match self.server_status.as_str() {
+            "Running" => Color::from_rgb(0.0, 0.8, 0.0),
+            "Stopped" => Color::from_rgb(0.8, 0.0, 0.0),
+            _ => Color::from_rgb(0.8, 0.8, 0.0),
+        };
+
+        let content = Column::new()
+            .spacing(20)
+            .padding(20)
+            .push(
+                text(&format!("Status: {}", self.server_status))
+                    .style(status_color)
+            )
+            .push(
+                row![
+                    text("Total Connections: "),
+                    text(self.total_connections.to_string())
+                ]
+            )
+            .push(
+                row![
+                    text("Active Connections: "),
+                    text(self.active_connections.to_string())
+                ]
+            )
+            .push(
+                row![
+                    text("Failed Connections: "),
+                    text(self.failed_connections.to_string())
+                ]
+            )
+            .push(if let Some(error) = &self.last_error {
+                row![
+                    text("Last Error: "),
+                    text(error).style(Color::from_rgb(0.8, 0.0, 0.0))
+                ]
+            } else {
+                row![]
+            })
+            .push(
+                text(format!("Uptime: {:?}", self.uptime))
+            )
+            .push(
+                button("Exit")
+                    .on_press(Message::Exit)
+                    .style(iced::theme::Button::Destructive)
+            );
+
+        container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x()
+            .center_y()
+            .into()
     }
 }
 
-impl eframe::App for NexaApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Update server status
-            let server_state = self.runtime.block_on(async {
-                self.server.get_state().await
-            });
-            self.server_status = format!("{:?}", server_state);
+#[derive(Default)]
+pub struct NexaGui {
+    app: Option<NexaApp>,
+}
 
-            // Title bar
-            ui.horizontal(|ui| {
-                ui.heading("Nexa Core Server");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let status_color = match server_state {
-                        crate::server::ServerState::Running => egui::Color32::GREEN,
-                        crate::server::ServerState::Stopped => egui::Color32::RED,
-                        crate::server::ServerState::Starting => egui::Color32::YELLOW,
-                        crate::server::ServerState::Stopping => egui::Color32::YELLOW,
-                    };
-                    ui.colored_label(status_color, &self.server_status);
-                    ui.label("Status: ");
-                });
-            });
-            ui.separator();
+impl Application for NexaGui {
+    type Message = Message;
+    type Theme = Theme;
+    type Executor = iced::executor::Default;
+    type Flags = Arc<Server>;
 
-            // Metrics section
-            ui.heading("Server Metrics");
-            
-            // Get metrics using the stored runtime
-            let metrics = self.runtime.block_on(async {
-                self.server.get_metrics().await
-            });
+    fn new(flags: Self::Flags) -> (Self, Command<Message>) {
+        let app = NexaApp::new(flags);
+        
+        (
+            Self { app: Some(app) },
+            Command::perform(async {}, |_| Message::Tick),
+        )
+    }
 
-            egui::Grid::new("metrics_grid").striped(true).show(ui, |ui| {
-                ui.label("Total Connections:");
-                ui.label(metrics.total_connections.to_string());
-                ui.end_row();
+    fn title(&self) -> String {
+        String::from("Nexa Core")
+    }
 
-                ui.label("Active Connections:");
-                ui.label(metrics.active_connections.to_string());
-                ui.end_row();
+    fn subscription(&self) -> Subscription<Message> {
+        time::every(Duration::from_secs(1)).map(|_| Message::Tick)
+    }
 
-                ui.label("Failed Connections:");
-                ui.label(metrics.failed_connections.to_string());
-                ui.end_row();
-
-                if let Some(error) = &metrics.last_error {
-                    ui.label("Last Error:");
-                    ui.label(error);
-                    ui.end_row();
+    fn update(&mut self, message: Message) -> Command<Message> {
+        if let Some(app) = &mut self.app {
+            match message {
+                Message::Tick => {
+                    app.uptime += Duration::from_secs(1);
+                    let server = app.server.clone();
+                    Command::perform(async move {
+                        let state = format!("{:?}", server.get_state().await);
+                        let active = server.get_active_connections().await;
+                        let metrics = server.get_metrics().await;
+                        (state, active, metrics)
+                    }, |(state, active, metrics)| Message::UpdateState(state, active, metrics))
                 }
+                Message::UpdateState(state, active, metrics) => {
+                    app.server_status = state;
+                    app.active_connections = active as u32;
+                    app.total_connections = metrics.total_connections;
+                    app.failed_connections = metrics.failed_connections;
+                    if let Some(error) = metrics.last_error {
+                        app.last_error = Some(error);
+                    }
+                    Command::none()
+                }
+                Message::Exit => window::close(),
+            }
+        } else {
+            Command::none()
+        }
+    }
 
-                ui.label("Uptime:");
-                ui.label(format!("{:?}", metrics.uptime));
-                ui.end_row();
-            });
+    fn view(&self) -> Element<Message> {
+        if let Some(app) = &self.app {
+            app.view()
+        } else {
+            text("Initializing...").into()
+        }
+    }
 
-            // Request continuous updates
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
-        });
+    fn theme(&self) -> Theme {
+        Theme::Dark
     }
 } 

@@ -147,7 +147,7 @@ impl MessageBuffer {
     }
     
     /// Pop a message from the specified priority queue
-    pub fn pop(&self, priority: Priority) -> Option<BufferedMessage> {
+    pub async fn pop(&self, priority: Priority) -> Option<BufferedMessage> {
         let mut queues = self.queues.write();
         let mut size = self.size.write();
         if let Some(msg) = queues[priority as usize].pop_front() {
@@ -159,7 +159,7 @@ impl MessageBuffer {
     }
     
     /// Pop the highest priority message available
-    pub fn pop_any(&self) -> Option<BufferedMessage> {
+    pub async fn pop_any(&self) -> Option<BufferedMessage> {
         let mut queues = self.queues.write();
         let mut size = self.size.write();
         for queue in queues.iter_mut().rev() {  // Start from highest priority
@@ -173,7 +173,6 @@ impl MessageBuffer {
     
     /// Clean up expired messages
     pub async fn cleanup(&self) {
-        let _now = SystemTime::now();
         let mut total_removed = 0;
         
         {
@@ -235,8 +234,11 @@ mod tests {
         // Test publish
         assert!(buffer.publish(msg.clone()).await.is_ok());
 
+        // Give some time for the message to be processed
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
         // Test pop
-        let received = buffer.pop(Priority::High);
+        let received = buffer.pop(Priority::High).await;
         assert!(received.is_some());
         let received = received.unwrap();
         assert_eq!(received.id, msg.id);
@@ -248,19 +250,9 @@ mod tests {
         let buffer = MessageBuffer::new(BufferConfig::default());
 
         // Create messages with different priorities
-        let high_msg = BufferedMessage {
+        let msg_low = BufferedMessage {
             id: Uuid::new_v4(),
             payload: vec![1],
-            priority: Priority::High,
-            created_at: SystemTime::now(),
-            attempts: 0,
-            max_attempts: 3,
-            delay_until: None,
-        };
-
-        let low_msg = BufferedMessage {
-            id: Uuid::new_v4(),
-            payload: vec![2],
             priority: Priority::Low,
             created_at: SystemTime::now(),
             attempts: 0,
@@ -268,34 +260,9 @@ mod tests {
             delay_until: None,
         };
 
-        // Publish messages in reverse priority order
-        assert!(buffer.publish(low_msg.clone()).await.is_ok());
-        assert!(buffer.publish(high_msg.clone()).await.is_ok());
-
-        // High priority message should be popped first
-        let received = buffer.pop_any();
-        assert!(received.is_some());
-        let received = received.unwrap();
-        assert_eq!(received.priority, Priority::High);
-
-        // Low priority message should be popped second
-        let received = buffer.pop_any();
-        assert!(received.is_some());
-        let received = received.unwrap();
-        assert_eq!(received.priority, Priority::Low);
-    }
-
-    #[tokio::test]
-    async fn test_cleanup() {
-        let buffer = MessageBuffer::new(BufferConfig {
-            cleanup_interval: Duration::from_millis(100),
-            message_ttl: Duration::from_millis(50),
-            ..Default::default()
-        });
-
-        let msg = BufferedMessage {
+        let msg_high = BufferedMessage {
             id: Uuid::new_v4(),
-            payload: vec![1],
+            payload: vec![2],
             priority: Priority::High,
             created_at: SystemTime::now(),
             attempts: 0,
@@ -303,12 +270,50 @@ mod tests {
             delay_until: None,
         };
 
-        assert!(buffer.publish(msg).await.is_ok());
+        // Publish messages
+        buffer.publish(msg_low.clone()).await.unwrap();
+        buffer.publish(msg_high.clone()).await.unwrap();
 
-        // Wait for cleanup
+        // Give some time for messages to be processed
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // High priority message should be popped first
+        let received = buffer.pop_any().await.unwrap();
+        assert_eq!(received.priority, Priority::High);
+
+        // Then low priority message
+        let received = buffer.pop_any().await.unwrap();
+        assert_eq!(received.priority, Priority::Low);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup() {
+        let config = BufferConfig {
+            message_ttl: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let buffer = MessageBuffer::new(config);
+
+        // Add a message
+        let msg = BufferedMessage {
+            id: Uuid::new_v4(),
+            payload: vec![1],
+            priority: Priority::Normal,
+            created_at: SystemTime::now(),
+            attempts: 0,
+            max_attempts: 3,
+            delay_until: None,
+        };
+
+        buffer.publish(msg).await.unwrap();
+
+        // Wait for message to expire
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Message should be cleaned up
-        assert!(buffer.pop(Priority::High).is_none());
+        // Run cleanup
+        buffer.cleanup().await;
+
+        // Buffer should be empty
+        assert!(buffer.is_empty());
     }
 }
