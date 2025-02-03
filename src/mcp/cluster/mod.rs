@@ -9,10 +9,4 @@
 mod types;
 pub mod manager;
 
-// Re-export commonly used types
-pub use types::{
-    Node, NodeRole, NodeHealth, NodeCapabilities,
-    ClusterState, ClusterConfig, ClusterMessage,
-    MembershipChange,
-};
 pub use manager::ClusterManager; 

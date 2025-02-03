@@ -1,8 +1,6 @@
-mod server;
-mod error;
-mod cli;
-mod gui;
-pub mod types;
+extern crate nexa_core;
+
+use nexa_core::{cli, error, gui, llm, mcp, types};
 
 use clap::Parser;
 use cli::CliHandler;

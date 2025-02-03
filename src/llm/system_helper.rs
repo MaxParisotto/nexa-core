@@ -134,7 +134,7 @@ impl SystemHelper {
 
     /// Query system status and information
     pub async fn query_system(&self, query: SystemQuery) -> Result<String, NexaError> {
-        let (prompt, context) = match &query {
+        let (prompt, context): (&str, String) = match &query {
             SystemQuery::Health => {
                 let health = self.server.check_health().await?; // Removed extra arguments
                 (
@@ -153,7 +153,7 @@ impl SystemHelper {
                 let agents = if let Some(id) = agent_id {
                     vec![self.server.registry.get_agent(id).await?]
                 } else {
-                    self.server.registry.list_agents().await
+                    self.server.registry.list_agents().await?
                 };
                 (
                     "Analyze the agent status and provide insights",

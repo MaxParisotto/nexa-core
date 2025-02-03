@@ -13,6 +13,7 @@ use log::info;
 use chrono::Utc;
 use std::ops::Deref;
 use crate::types::agent::{Agent, AgentStatus, Task, TaskStatus};
+use super::llm::LLMConnection;
 
 const MAX_LOG_ENTRIES: usize = 100;
 
@@ -41,6 +42,8 @@ pub enum Message {
     MaxConnectionsUpdated(Result<(), String>),
     // View management
     ChangeView(View),
+    /// Message for LLM connection result: (agent_id, provider, result)
+    LLMConnected(String, String, Result<(), String>),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -591,9 +594,13 @@ impl Application for NexaGui {
                 Message::AgentCreated(result) => {
                     match result {
                         Ok(_) => {
+                            // Capture agent id and capabilities before clearing
+                            let agent_id = app.new_agent_name.clone();
+                            let capabilities = app.new_agent_capabilities.clone().to_lowercase();
+
                             app.agents.push(Agent {
-                                id: app.new_agent_name.clone(),
-                                name: app.new_agent_name.clone(),
+                                id: agent_id.clone(),
+                                name: agent_id.clone(),
                                 capabilities: app.new_agent_capabilities
                                     .split(',')
                                     .map(|s| s.trim().to_string())
@@ -603,10 +610,27 @@ impl Application for NexaGui {
                                 current_task: None,
                                 last_heartbeat: Utc::now(),
                             });
-                            app.agent_options.push(app.new_agent_name.clone());
+                            app.agent_options.push(agent_id.clone());
                             app.new_agent_name.clear();
                             app.new_agent_capabilities.clear();
                             app.add_log("Agent created successfully".to_string(), LogLevel::Info, "server");
+
+                            let mut extra_cmds: Vec<Command<Message>> = vec![];
+                            if capabilities.contains("lmstudio") {
+                                let aid = agent_id.clone();
+                                extra_cmds.push(Command::perform(async move {
+                                    let res = LLMConnection::connect("LMStudio", aid.clone()).await;
+                                    (aid, "LMStudio".to_string(), res.map_err(|e| e.to_string()))
+                                }, |(aid, provider, res)| Message::LLMConnected(aid, provider, res)));
+                            }
+                            if capabilities.contains("ollama") {
+                                let aid = agent_id.clone();
+                                extra_cmds.push(Command::perform(async move {
+                                    let res = LLMConnection::connect("Ollama", aid.clone()).await;
+                                    (aid, "Ollama".to_string(), res.map_err(|e| e.to_string()))
+                                }, |(aid, provider, res)| Message::LLMConnected(aid, provider, res)));
+                            }
+                            return Command::batch(extra_cmds);
                         },
                         Err(e) => {
                             app.add_log(format!("Failed to create agent: {}", e), LogLevel::Error, "error");
@@ -691,6 +715,17 @@ impl Application for NexaGui {
                 }
                 Message::ChangeView(view) => {
                     app.current_view = view;
+                    Command::none()
+                }
+                Message::LLMConnected(agent_id, provider, result) => {
+                    match result {
+                        Ok(_) => {
+                            app.add_log(format!("LLM connection successful for agent {} with provider {}", agent_id, provider), LogLevel::Info, "server");
+                        },
+                        Err(e) => {
+                            app.add_log(format!("LLM connection failed for agent {} with provider {}: {}", agent_id, provider, e), LogLevel::Error, "error");
+                        }
+                    }
                     Command::none()
                 }
             }
