@@ -1,4 +1,4 @@
-use iced::{Element, Length, Theme, Color, Subscription, Command};
+use iced::{Element, Length, Theme, Color, Subscription, Command, alignment, theme};
 use iced::executor;
 use iced::window;
 use iced::widget::{row, text, container, scrollable, Column, Button, TextInput, PickList, Rule, Row, Checkbox};
@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::collections::VecDeque;
 use crate::server::ServerMetrics;
 use crate::error::NexaError;
-use crate::cli::{CliHandler, LLMModel, AgentConfig, RetryPolicy, WorkflowStep, AgentWorkflow, Agent as CliAgent};
+use crate::cli::{CliHandler, LLMModel, AgentConfig, RetryPolicy, WorkflowStep, AgentWorkflow, Agent as CliAgent, AgentStatus};
 use log::info;
 use chrono::Utc;
 use std::ops::Deref;
@@ -53,6 +53,7 @@ pub enum Message {
     Exit,
     // Agent management
     CreateAgent,
+    ClearAgentForm,
     AgentNameChanged(String),
     AgentCapabilitiesChanged(String),
     AgentCreated(Result<CliAgent, String>),
@@ -443,12 +444,26 @@ impl NexaApp {
     fn view_agents(&self) -> Element<Message> {
         let content = Column::new()
             .spacing(20)
-            .push(text("Agent Management").size(24));
+            .push(
+                container(
+                    text("Agent Management")
+                        .size(24)
+                        .style(Color::from_rgb(0.0, 0.5, 0.7))
+                )
+                .padding(10)
+            );
 
         // Create New Agent Section
         let new_agent_section = Column::new()
             .spacing(10)
-            .push(text("Create New Agent").size(20))
+            .push(
+                container(
+                    text("Create New Agent")
+                        .size(20)
+                        .style(Color::from_rgb(0.0, 0.5, 0.7))
+                )
+                .padding(5)
+            )
             .push(
                 Column::new()
                     .spacing(20)
@@ -464,13 +479,55 @@ impl NexaApp {
                                         .push(
                                             TextInput::new("Enter agent name...", &self.new_agent_name)
                                                 .on_input(Message::AgentNameChanged)
-                                                .padding(5)
+                                                .padding(8)
                                                 .width(Length::Fixed(300.0))
+                                                .style(theme::TextInput::Default)
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("LLM Provider:").width(Length::Fixed(120.0)))
+                                        .push(
+                                            PickList::new(
+                                                self.llm_servers.iter().map(|s| s.provider.clone()).collect::<Vec<_>>(),
+                                                Some(self.selected_provider.clone()),
+                                                Message::LLMProviderChanged
+                                            )
+                                            .padding(8)
+                                            .width(Length::Fixed(300.0))
+                                            .style(theme::PickList::Default)
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("LLM Model:").width(Length::Fixed(120.0)))
+                                        .push(
+                                            if let Some(server) = self.llm_servers.iter().find(|s| s.provider == self.selected_provider) {
+                                                PickList::new(
+                                                    server.model_names.clone(),
+                                                    Some(self.selected_model.clone()),
+                                                    |model| Message::SelectModel(self.selected_provider.clone(), model)
+                                                )
+                                                .padding(8)
+                                                .width(Length::Fixed(300.0))
+                                                .style(theme::PickList::Default)
+                                            } else {
+                                                PickList::new(
+                                                    vec!["No models available".to_string()],
+                                                    None,
+                                                    |_| Message::SelectModel(String::new(), String::new())
+                                                )
+                                                .padding(8)
+                                                .width(Length::Fixed(300.0))
+                                                .style(theme::PickList::Default)
+                                            }
                                         )
                                 )
                         )
-                        .padding(10)
-                        .style(iced::theme::Container::Box)
+                        .padding(15)
+                        .style(theme::Container::Box)
                     )
                     .push(
                         container(
@@ -488,21 +545,21 @@ impl NexaApp {
                                                     Checkbox::new(
                                                         "Local Files",
                                                         self.mcp_local_files,
-                                                        |checked| Message::ToggleMCPLocalFiles(checked)
+                                                        Message::ToggleMCPLocalFiles
                                                     )
                                                 )
                                                 .push(
                                                     Checkbox::new(
                                                         "Databases",
                                                         self.mcp_databases,
-                                                        |checked| Message::ToggleMCPDatabases(checked)
+                                                        Message::ToggleMCPDatabases
                                                     )
                                                 )
                                                 .push(
                                                     Checkbox::new(
                                                         "APIs",
                                                         self.mcp_apis,
-                                                        |checked| Message::ToggleMCPAPIs(checked)
+                                                        Message::ToggleMCPAPIs
                                                     )
                                                 )
                                         )
@@ -518,21 +575,21 @@ impl NexaApp {
                                                     Checkbox::new(
                                                         "Code Analysis",
                                                         self.mcp_code_analysis,
-                                                        |checked| Message::ToggleMCPCodeAnalysis(checked)
+                                                        Message::ToggleMCPCodeAnalysis
                                                     )
                                                 )
                                                 .push(
                                                     Checkbox::new(
                                                         "Text Processing",
                                                         self.mcp_text_processing,
-                                                        |checked| Message::ToggleMCPTextProcessing(checked)
+                                                        Message::ToggleMCPTextProcessing
                                                     )
                                                 )
                                                 .push(
                                                     Checkbox::new(
                                                         "Data Transformation",
                                                         self.mcp_data_transform,
-                                                        |checked| Message::ToggleMCPDataTransform(checked)
+                                                        Message::ToggleMCPDataTransform
                                                     )
                                                 )
                                         )
@@ -556,7 +613,7 @@ impl NexaApp {
                                             Checkbox::new(
                                                 "Allow root access",
                                                 self.mcp_root_access,
-                                                |checked| Message::ToggleMCPRootAccess(checked)
+                                                Message::ToggleMCPRootAccess
                                             )
                                         )
                                 )
@@ -581,12 +638,81 @@ impl NexaApp {
                         container(
                             Column::new()
                                 .spacing(10)
-                                .push(text("Capabilities:").width(Length::Fixed(120.0)))
+                                .push(text("Performance Settings").size(16))
                                 .push(
-                                    TextInput::new("Enter capabilities (comma-separated)...", &self.new_agent_capabilities)
-                                        .on_input(Message::AgentCapabilitiesChanged)
-                                        .padding(5)
-                                        .width(Length::Fixed(300.0))
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Max Concurrent Tasks:").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("5", &self.max_concurrent_tasks_input)
+                                                .on_input(Message::MaxConcurrentTasksChanged)
+                                                .padding(5)
+                                                .width(Length::Fixed(100.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Priority Threshold:").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("2", &self.priority_threshold_input)
+                                                .on_input(Message::PriorityThresholdChanged)
+                                                .padding(5)
+                                                .width(Length::Fixed(100.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Timeout (seconds):").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("30", &self.timeout_seconds_input)
+                                                .on_input(Message::TimeoutSecondsChanged)
+                                                .padding(5)
+                                                .width(Length::Fixed(100.0))
+                                        )
+                                )
+                        )
+                        .padding(10)
+                        .style(iced::theme::Container::Box)
+                    )
+                    .push(
+                        container(
+                            Column::new()
+                                .spacing(10)
+                                .push(text("Retry Policy").size(16))
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Max Retries:").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("3", &self.max_retries_input)
+                                                .on_input(Message::MaxRetriesChanged)
+                                                .padding(5)
+                                                .width(Length::Fixed(100.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Backoff (ms):").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("1000", &self.backoff_ms_input)
+                                                .on_input(Message::BackoffMsChanged)
+                                                .padding(5)
+                                                .width(Length::Fixed(100.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Max Backoff (ms):").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("10000", &self.max_backoff_ms_input)
+                                                .on_input(Message::MaxBackoffMsChanged)
+                                                .padding(5)
+                                                .width(Length::Fixed(100.0))
+                                        )
                                 )
                         )
                         .padding(10)
@@ -594,17 +720,125 @@ impl NexaApp {
                     )
             );
 
-        let content = content.push(
-            container(new_agent_section)
-                .width(Length::Fill)
+        // Action Buttons
+        let action_buttons = Row::new()
+            .spacing(20)
+            .push(
+                Button::new(
+                    text("Create Agent")
+                        .horizontal_alignment(alignment::Horizontal::Center)
+                        .size(16)
+                )
+                .style(theme::Button::Primary)
+                .padding(12)
+                .width(Length::Fixed(150.0))
+                .on_press(Message::CreateAgent)
+            )
+            .push(
+                Button::new(
+                    text("Clear Form")
+                        .horizontal_alignment(alignment::Horizontal::Center)
+                        .size(16)
+                )
+                .style(theme::Button::Secondary)
+                .padding(12)
+                .width(Length::Fixed(150.0))
+                .on_press(Message::ClearAgentForm)
+            );
+
+        // Existing Agents Section
+        let existing_agents = if !self.agents.is_empty() {
+            let mut agents_list = Column::new()
+                .spacing(10)
+                .push(
+                    container(
+                        text("Existing Agents")
+                            .size(20)
+                            .style(Color::from_rgb(0.0, 0.5, 0.7))
+                    )
+                    .padding(5)
+                );
+
+            for agent in &self.agents {
+                let status_color = match agent.status {
+                    AgentStatus::Active => Color::from_rgb(0.0, 0.8, 0.0),
+                    AgentStatus::Error => Color::from_rgb(0.8, 0.0, 0.0),
+                    AgentStatus::Offline => Color::from_rgb(0.5, 0.5, 0.5),
+                    _ => Color::from_rgb(0.3, 0.3, 0.3),
+                };
+
+                let agent_card = container(
+                    Column::new()
+                        .spacing(10)
+                        .push(
+                            Row::new()
+                                .spacing(10)
+                                .push(text(&agent.name).size(16))
+                                .push(text(format!("({:?})", agent.status)).style(status_color))
+                        )
+                        .push(
+                            Row::new()
+                                .spacing(10)
+                                .push(text("Tasks:").size(14))
+                                .push(text(format!("Completed: {}", agent.metrics.tasks_completed)))
+                                .push(text(format!("Failed: {}", agent.metrics.tasks_failed)).style(Color::from_rgb(0.8, 0.0, 0.0)))
+                        )
+                        .push(
+                            Row::new()
+                                .spacing(10)
+                                .push(
+                                    Button::new("Test")
+                                        .on_press(Message::TestAgent(agent.id.clone()))
+                                )
+                                .push(
+                                    Button::new(if agent.status == AgentStatus::Active { "Stop" } else { "Start" })
+                                        .on_press(Message::ToggleAgentStatus(agent.id.clone()))
+                                )
+                                .push(
+                                    Button::new("Delete")
+                                        .style(iced::theme::Button::Destructive)
+                                        .on_press(Message::DeleteAgent(agent.id.clone()))
+                                )
+                        )
+                )
                 .padding(10)
-                .style(iced::theme::Container::Box)
-        );
+                .style(iced::theme::Container::Box);
 
-        let scrollable_content = scrollable(content)
-            .height(Length::Fill);
+                agents_list = agents_list.push(agent_card);
+            }
+            agents_list
+        } else {
+            Column::new()
+                .push(
+                    text("No agents created yet")
+                        .style(Color::from_rgb(0.5, 0.5, 0.5))
+                )
+        };
 
-        scrollable_content.into()
+        let content = content
+            .push(
+                container(new_agent_section)
+                    .width(Length::Fill)
+                    .padding(10)
+                    .style(iced::theme::Container::Box)
+            )
+            .push(
+                container(action_buttons)
+                    .width(Length::Fill)
+                    .padding(10)
+                    .center_x()
+            )
+            .push(Rule::horizontal(10))
+            .push(
+                container(existing_agents)
+                    .width(Length::Fill)
+                    .padding(10)
+                    .style(iced::theme::Container::Box)
+            );
+
+        scrollable(content)
+            .height(Length::Fill)
+            .into()
     }
 
     fn view_tasks(&self) -> Element<Message> {
@@ -1213,7 +1447,7 @@ struct SidebarStyle;
 impl StyleSheet for SidebarStyle {
     type Style = Theme;
 
-    fn appearance(&self, _style: &Self::Style) -> iced::widget::container::Appearance {
+    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         iced::widget::container::Appearance {
             background: Some(iced::Background::Color(iced::Color::from_rgb(0.0, 0.5, 0.7))),
             text_color: Some(iced::Color::WHITE),
@@ -1399,6 +1633,26 @@ impl Application for NexaGui {
                 }
                 Message::CreateAgent => {
                     app.handle_agent_creation()
+                }
+                Message::ClearAgentForm => {
+                    app.new_agent_name.clear();
+                    app.new_agent_capabilities.clear();
+                    app.mcp_local_files = false;
+                    app.mcp_databases = false;
+                    app.mcp_apis = false;
+                    app.mcp_code_analysis = false;
+                    app.mcp_text_processing = false;
+                    app.mcp_data_transform = false;
+                    app.mcp_custom_prompts.clear();
+                    app.mcp_root_access = false;
+                    app.mcp_transport = "WebSocket".to_string();
+                    app.max_concurrent_tasks_input = "5".to_string();
+                    app.priority_threshold_input = "2".to_string();
+                    app.max_retries_input = "3".to_string();
+                    app.backoff_ms_input = "1000".to_string();
+                    app.max_backoff_ms_input = "10000".to_string();
+                    app.timeout_seconds_input = "30".to_string();
+                    Command::none()
                 }
                 Message::AgentNameChanged(name) => {
                     app.new_agent_name = name;
