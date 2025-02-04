@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use crate::cli::{LLMModel};
+use crate::cli::{LLMModel, Agent, AgentConfig};
 
 #[derive(Debug, Clone)]
 pub struct NexaApp {
@@ -17,10 +17,12 @@ pub struct NexaApp {
     pub current_view: View,
     pub server_logs: Vec<String>,
     pub error_logs: Vec<String>,
+    pub agents: Vec<Agent>,
+    pub agent_form: AgentFormState,
 }
 
 impl NexaApp {
-    pub fn new(handler: std::sync::Arc<crate::cli::CliHandler>) -> Self {
+    pub fn new(handler: Arc<crate::cli::CliHandler>) -> Self {
         Self {
             handler,
             server_status: "Stopped".to_string(),
@@ -28,11 +30,13 @@ impl NexaApp {
             active_connections: 0,
             failed_connections: 0,
             last_error: None,
-            uptime: std::time::Duration::from_secs(0),
+            uptime: Duration::from_secs(0),
             should_exit: false,
             current_view: View::Overview,
             server_logs: Vec::new(),
             error_logs: Vec::new(),
+            agents: Vec::new(),
+            agent_form: AgentFormState::default(),
         }
     }
 }
@@ -47,6 +51,23 @@ pub enum Message {
     ServerStopped(bool, Option<String>),
     Exit,
     ChangeView(View),
+    ShowAgentForm,
+    HideAgentForm,
+    UpdateAgentName(String),
+    UpdateAgentLLMProvider(String),
+    UpdateAgentLLMModel(String),
+    UpdateAgentMaxTasks(String),
+    UpdateAgentPriority(String),
+    UpdateAgentTimeout(String),
+    SubmitAgentForm,
+    CreateAgent(String, AgentConfig),
+    AgentCreated(Result<Agent, String>),
+    UpdateAgentCapabilities(String, Vec<String>),
+    CapabilitiesUpdated(Result<(), String>),
+    SetAgentHierarchy(String, String),
+    HierarchyUpdated(Result<(), String>),
+    RefreshAgents,
+    AgentsRefreshed(Result<Vec<Agent>, String>),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -118,4 +139,16 @@ pub struct CustomPrompt {
     pub name: String,
     pub template: String,
     pub parameters: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentFormState {
+    pub name: String,
+    pub llm_provider: String,
+    pub llm_model: String,
+    pub max_concurrent_tasks: String,
+    pub priority_threshold: String,
+    pub timeout_seconds: String,
+    pub show_form: bool,
+    pub validation_errors: Vec<String>,
 } 
