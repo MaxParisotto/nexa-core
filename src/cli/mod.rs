@@ -184,5 +184,38 @@ impl CliHandler {
         // TODO: Implement actual connection limit setting
         Ok(())
     }
+
+    pub async fn add_llm_server(&self, provider: &str, address: &str) -> Result<(), String> {
+        info!("Adding LLM server: {} at {}", provider, address);
+        // TODO: Add proper LLM server configuration
+        Ok(())
+    }
+
+    pub async fn remove_llm_server(&self, provider: &str) -> Result<(), String> {
+        info!("Removing LLM server: {}", provider);
+        // TODO: Remove LLM server configuration
+        Ok(())
+    }
+
+    pub async fn connect_llm(&self, provider: &str) -> Result<(), String> {
+        info!("Connecting to LLM server: {}", provider);
+        match provider {
+            "LMStudio" => {
+                super::llm::LLMConnection::connect("LMStudio", "system".to_string()).await
+                    .map_err(|e| e.to_string())
+            },
+            "Ollama" => {
+                super::llm::LLMConnection::connect("Ollama", "system".to_string()).await
+                    .map_err(|e| e.to_string())
+            },
+            _ => Err(format!("Unsupported LLM provider: {}", provider))
+        }
+    }
+
+    pub async fn disconnect_llm(&self, provider: &str) -> Result<(), String> {
+        info!("Disconnecting from LLM server: {}", provider);
+        // TODO: Implement proper LLM disconnection
+        Ok(())
+    }
 }
 

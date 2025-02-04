@@ -68,6 +68,13 @@ pub enum Message {
     ChangeView(View),
     /// Message for LLM connection result: (agent_id, provider, result)
     LLMConnected(String, String, Result<(), String>),
+    // LLM Server management
+    AddLLMServer(String),  // provider name
+    RemoveLLMServer(String),  // provider name
+    LLMAddressChanged(String),
+    LLMProviderChanged(String),
+    ConnectLLM(String),  // provider name
+    DisconnectLLM(String),  // provider name
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -77,6 +84,7 @@ pub enum View {
     Tasks,
     Connections,
     Settings,
+    LLMServers,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -114,6 +122,22 @@ enum LogLevel {
     Warning,
 }
 
+#[derive(Debug, Clone)]
+struct LLMServer {
+    provider: String,
+    address: String,
+    status: LLMStatus,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum LLMStatus {
+    Connected,
+    Disconnected,
+    Connecting,
+    Error,
+}
+
 pub struct NexaApp {
     handler: Arc<CliHandler>,
     server_status: String,
@@ -140,6 +164,9 @@ pub struct NexaApp {
     max_connections_input: String,
     // View management
     current_view: View,
+    llm_servers: Vec<LLMServer>,
+    new_llm_address: String,
+    new_llm_provider: String,
 }
 
 impl NexaApp {
@@ -167,6 +194,22 @@ impl NexaApp {
             tasks: Vec::new(),
             max_connections_input: String::new(),
             current_view: View::Overview,
+            llm_servers: vec![
+                LLMServer {
+                    provider: "LMStudio".to_string(),
+                    address: "http://localhost:1234".to_string(),
+                    status: LLMStatus::Disconnected,
+                    last_error: None,
+                },
+                LLMServer {
+                    provider: "Ollama".to_string(),
+                    address: "http://localhost:11434".to_string(),
+                    status: LLMStatus::Disconnected,
+                    last_error: None,
+                },
+            ],
+            new_llm_address: String::new(),
+            new_llm_provider: String::new(),
         }
     }
 
@@ -391,6 +434,81 @@ impl NexaApp {
             .into()
     }
 
+    fn view_llm_servers(&self) -> Element<Message> {
+        let mut content = Column::new()
+            .spacing(20)
+            .push(text("LLM Server Management").size(24));
+
+        // Add new LLM server section
+        content = content.push(
+            Column::new()
+                .spacing(10)
+                .push(text("Add New LLM Server"))
+                .push(
+                    TextInput::new("Provider name...", &self.new_llm_provider)
+                        .on_input(Message::LLMProviderChanged)
+                        .padding(10)
+                )
+                .push(
+                    TextInput::new("Server address...", &self.new_llm_address)
+                        .on_input(Message::LLMAddressChanged)
+                        .padding(10)
+                )
+                .push(
+                    Button::new("Add Server")
+                        .on_press(Message::AddLLMServer(self.new_llm_provider.clone()))
+                        .padding(10)
+                )
+        );
+
+        // List existing LLM servers
+        content = content.push(Rule::horizontal(10))
+            .push(text("Active LLM Servers").size(20));
+
+        for server in &self.llm_servers {
+            let status_color = match server.status {
+                LLMStatus::Connected => Color::from_rgb(0.0, 0.7, 0.0),
+                LLMStatus::Disconnected => Color::from_rgb(0.5, 0.5, 0.5),
+                LLMStatus::Connecting => Color::from_rgb(0.7, 0.7, 0.0),
+                LLMStatus::Error => Color::from_rgb(0.7, 0.0, 0.0),
+            };
+
+            let server_row = row![
+                text(&server.provider).width(Length::Fixed(120.0)),
+                text(&server.address).width(Length::Fixed(200.0)),
+                text(format!("{:?}", server.status)).style(status_color).width(Length::Fixed(100.0)),
+                if server.status == LLMStatus::Connected {
+                    Button::new("Disconnect")
+                        .on_press(Message::DisconnectLLM(server.provider.clone()))
+                } else {
+                    Button::new("Connect")
+                        .on_press(Message::ConnectLLM(server.provider.clone()))
+                },
+                Button::new("Remove")
+                    .on_press(Message::RemoveLLMServer(server.provider.clone()))
+                    .style(iced::theme::Button::Destructive)
+            ]
+            .spacing(20)
+            .padding(10);
+
+            content = content.push(server_row);
+
+            if let Some(error) = &server.last_error {
+                content = content.push(
+                    text(error)
+                        .style(Color::from_rgb(0.7, 0.0, 0.0))
+                        .size(12)
+                );
+            }
+        }
+
+        // Add log section
+        content = content.push(Rule::horizontal(10))
+            .push(self.view_log_section("LLM Connection Logs", &self.connection_logs));
+
+        scrollable(content).into()
+    }
+
     /// Returns a Webmin-style sidebar with navigation buttons.
     fn view_sidebar(&self) -> Element<Message> {
         let sidebar = iced::widget::Column::new()
@@ -441,6 +559,15 @@ impl NexaApp {
                     } else {
                         iced::theme::Button::Text
                     })
+            )
+            .push(
+                Button::new(text("LLM Servers"))
+                    .on_press(Message::ChangeView(View::LLMServers))
+                    .style(if self.current_view == View::LLMServers {
+                        iced::theme::Button::Primary
+                    } else {
+                        iced::theme::Button::Text
+                    })
             );
 
         iced::widget::container(sidebar)
@@ -482,6 +609,7 @@ impl NexaApp {
             View::Tasks => self.view_tasks(),
             View::Connections => self.view_connections(),
             View::Settings => self.view_settings(),
+            View::LLMServers => self.view_llm_servers(),
         };
 
         let content = iced::widget::Row::new()
@@ -837,15 +965,87 @@ impl Application for NexaGui {
                     Command::none()
                 }
                 Message::LLMConnected(agent_id, provider, result) => {
-                    match result {
-                        Ok(_) => {
-                            app.add_log(format!("LLM connection successful for agent {} with provider {}", agent_id, provider), LogLevel::Info, "server");
-                        },
-                        Err(e) => {
-                            app.add_log(format!("LLM connection failed for agent {} with provider {}: {}", agent_id, provider, e), LogLevel::Error, "error");
+                    // Update LLM server status
+                    if let Some(server) = app.llm_servers.iter_mut().find(|s| s.provider == provider) {
+                        match &result {
+                            Ok(_) => {
+                                server.status = LLMStatus::Connected;
+                                server.last_error = None;
+                                app.add_log(
+                                    format!("LLM connection successful for provider {}", provider),
+                                    LogLevel::Info,
+                                    "connection"
+                                );
+                            },
+                            Err(ref e) => {
+                                server.status = LLMStatus::Error;
+                                server.last_error = Some(e.clone());
+                                app.add_log(
+                                    format!("LLM connection failed for provider {}: {}", provider, e),
+                                    LogLevel::Error,
+                                    "error"
+                                );
+                            }
+                        }
+                    }
+
+                    // Handle agent-specific connection if agent_id is provided
+                    if !agent_id.is_empty() {
+                        match &result {
+                            Ok(_) => {
+                                app.add_log(
+                                    format!("LLM connection successful for agent {} with provider {}", agent_id, provider),
+                                    LogLevel::Info,
+                                    "server"
+                                );
+                            },
+                            Err(ref e) => {
+                                app.add_log(
+                                    format!("LLM connection failed for agent {} with provider {}: {}", agent_id, provider, e),
+                                    LogLevel::Error,
+                                    "error"
+                                );
+                            }
                         }
                     }
                     Command::none()
+                }
+                Message::AddLLMServer(provider) => {
+                    let address = app.new_llm_address.clone();
+                    let provider_clone = provider.clone();
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().add_llm_server(&provider, &address).await
+                    }, move |result| Message::LLMConnected(String::new(), provider_clone, result))
+                }
+                Message::RemoveLLMServer(provider) => {
+                    let provider_clone = provider.clone();
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().remove_llm_server(&provider).await
+                    }, move |result| Message::LLMConnected(String::new(), provider_clone, result))
+                }
+                Message::LLMAddressChanged(address) => {
+                    app.new_llm_address = address;
+                    Command::none()
+                }
+                Message::LLMProviderChanged(provider) => {
+                    app.new_llm_provider = provider;
+                    Command::none()
+                }
+                Message::ConnectLLM(provider) => {
+                    let provider_clone = provider.clone();
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().connect_llm(&provider).await
+                    }, move |result| Message::LLMConnected(String::new(), provider_clone, result))
+                }
+                Message::DisconnectLLM(provider) => {
+                    let provider_clone = provider.clone();
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().disconnect_llm(&provider).await
+                    }, move |result| Message::LLMConnected(String::new(), provider_clone, result))
                 }
             }
         } else {
