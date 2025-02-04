@@ -64,7 +64,21 @@ fn main() -> Result<(), NexaError> {
 }
 
 fn init_logging() {
-    env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
-        .format_timestamp_millis()
+    let env = Env::default()
+        .filter_or("RUST_LOG", "info")
+        .write_style_or("RUST_LOG_STYLE", "always");
+
+    env_logger::Builder::from_env(env)
+        .format(|buf, record| {
+            use chrono::Local;
+            use std::io::Write;
+            writeln!(
+                buf,
+                "{} [{}] {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                record.level(),
+                record.args()
+            )
+        })
         .init();
 } 

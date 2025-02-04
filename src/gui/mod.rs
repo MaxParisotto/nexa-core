@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::collections::VecDeque;
 use crate::server::ServerMetrics;
 use crate::error::NexaError;
-use crate::cli::CliHandler;
+use crate::cli::{CliHandler, LLMModel};
 use log::info;
 use chrono::Utc;
 use std::ops::Deref;
@@ -75,9 +75,12 @@ pub enum Message {
     LLMProviderChanged(String),
     ConnectLLM(String),  // provider name
     DisconnectLLM(String),  // provider name
-    ModelsLoaded(String, Result<Vec<String>, String>),
+    ModelsLoaded(String, Result<Vec<LLMModel>, String>),
     SelectModel(String, String),  // (provider, model)
     ModelSelected(String, String, Result<(), String>),  // (provider, model, result)
+    RefreshModels(String),  // provider name
+    TestModel(String, String),  // (provider, model)
+    ModelTested(String, String, Result<String, String>),  // (provider, model, result)
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -131,7 +134,8 @@ struct LLMServer {
     address: String,
     status: LLMStatus,
     last_error: Option<String>,
-    available_models: Vec<String>,
+    available_models: Vec<LLMModel>,
+    model_names: Vec<String>,
     selected_model: Option<String>,
 }
 
@@ -207,6 +211,7 @@ impl NexaApp {
                     status: LLMStatus::Disconnected,
                     last_error: None,
                     available_models: Vec::new(),
+                    model_names: Vec::new(),
                     selected_model: None,
                 },
                 LLMServer {
@@ -215,6 +220,7 @@ impl NexaApp {
                     status: LLMStatus::Disconnected,
                     last_error: None,
                     available_models: Vec::new(),
+                    model_names: Vec::new(),
                     selected_model: None,
                 },
             ],
@@ -486,18 +492,18 @@ impl NexaApp {
 
             let model_picker = if !server.available_models.is_empty() {
                 PickList::new(
-                    &server.available_models,
+                    &server.model_names,
                     server.selected_model.clone(),
                     move |model| Message::SelectModel(server.provider.clone(), model)
                 )
-                .width(Length::Fixed(150.0))
+                .width(Length::Fixed(200.0))
             } else {
                 PickList::new(
                     &self.empty_models,
                     None,
                     |_| Message::SelectModel(server.provider.clone(), String::new())
                 )
-                .width(Length::Fixed(150.0))
+                .width(Length::Fixed(200.0))
                 .placeholder("No models available")
             };
 
@@ -506,6 +512,8 @@ impl NexaApp {
                 text(&server.address).width(Length::Fixed(200.0)),
                 text(format!("{:?}", server.status)).style(status_color).width(Length::Fixed(100.0)),
                 model_picker,
+                Button::new("Refresh Models")
+                    .on_press(Message::RefreshModels(server.provider.clone())),
                 if server.status == LLMStatus::Connected {
                     Button::new("Disconnect")
                         .on_press(Message::DisconnectLLM(server.provider.clone()))
@@ -521,6 +529,45 @@ impl NexaApp {
             .padding(10);
 
             content = content.push(server_row);
+
+            // Show selected model details if any
+            if let Some(model_name) = &server.selected_model {
+                if let Some(model) = server.available_models.iter().find(|m| m.name == *model_name) {
+                    let model_details = Column::new()
+                        .spacing(5)
+                        .push(
+                            row![
+                                text(format!("Selected Model: {}", model.name))
+                                    .size(14)
+                                    .style(Color::from_rgb(0.0, 0.5, 0.7)),
+                                Button::new("Test")
+                                    .on_press(Message::TestModel(server.provider.clone(), model_name.clone()))
+                            ].spacing(20)
+                        )
+                        .push(
+                            row![
+                                text(format!("Size: {}", model.size)).width(Length::Fixed(150.0)),
+                                text(format!("Context: {} tokens", model.context_length)).width(Length::Fixed(200.0)),
+                                if let Some(quant) = &model.quantization {
+                                    text(format!("Quantization: {}", quant))
+                                } else {
+                                    text("No quantization")
+                                }
+                            ].spacing(20)
+                        )
+                        .push(
+                            text(&model.description)
+                                .size(12)
+                                .style(Color::from_rgb(0.5, 0.5, 0.5))
+                        );
+
+                    content = content.push(
+                        container(model_details)
+                            .padding(10)
+                            .style(iced::theme::Container::Box)
+                    );
+                }
+            }
 
             if let Some(error) = &server.last_error {
                 content = content.push(
@@ -1089,8 +1136,9 @@ impl Application for NexaGui {
                         match &result {
                             Ok(models) => {
                                 server.available_models = models.clone();
+                                server.model_names = models.iter().map(|m| m.name.clone()).collect();
                                 server.status = LLMStatus::Connected;
-                                (format!("Loaded {} models for provider {}", server.available_models.len(), provider), true)
+                                (format!("Loaded {} models for provider {}", models.len(), provider), true)
                             }
                             Err(e) => {
                                 server.status = LLMStatus::Error;
@@ -1102,7 +1150,6 @@ impl Application for NexaGui {
                         (format!("Server not found: {}", provider), false)
                     };
 
-                    // Log the message after we're done with the mutable borrow
                     app.add_log(
                         log_message,
                         if success { LogLevel::Info } else { LogLevel::Error },
@@ -1136,6 +1183,43 @@ impl Application for NexaGui {
                             }
                             app.add_log(
                                 format!("Failed to select model {} for provider {}: {}", model, provider, e),
+                                LogLevel::Error,
+                                "error"
+                            );
+                        }
+                    }
+                    Command::none()
+                }
+                Message::RefreshModels(provider) => {
+                    let provider_clone = provider.clone();
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().list_models(&provider).await
+                    }, move |result| Message::ModelsLoaded(provider_clone, result))
+                }
+                Message::TestModel(provider, model) => {
+                    let provider_clone = provider.clone();
+                    let model_clone = model.clone();
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().test_model(&provider, &model).await
+                    }, move |result| Message::ModelTested(provider_clone, model_clone, result))
+                }
+                Message::ModelTested(provider, model, result) => {
+                    match result {
+                        Ok(response) => {
+                            app.add_log(
+                                format!("Model test successful for {} ({}): {}", model, provider, response),
+                                LogLevel::Info,
+                                "connection"
+                            );
+                        }
+                        Err(e) => {
+                            if let Some(server) = app.llm_servers.iter_mut().find(|s| s.provider == provider) {
+                                server.last_error = Some(e.clone());
+                            }
+                            app.add_log(
+                                format!("Model test failed for {} ({}): {}", model, provider, e),
                                 LogLevel::Error,
                                 "error"
                             );

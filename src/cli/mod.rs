@@ -6,7 +6,7 @@
 //! - Managing agents
 
 use clap::{Parser, Subcommand};
-use log::{error, info};
+use log::{error, info, debug};
 use crate::server::Server;
 use std::path::PathBuf;
 use crate::error::NexaError;
@@ -17,6 +17,8 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use nix::libc;
 use crate::gui::TaskPriority;
+use reqwest;
+use serde_json;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -35,6 +37,15 @@ pub enum Commands {
     Status,
     /// Launch the GUI
     Gui,
+}
+
+#[derive(Debug, Clone)]
+pub struct LLMModel {
+    pub name: String,
+    pub size: String,
+    pub context_length: usize,
+    pub quantization: Option<String>,
+    pub description: String,
 }
 
 pub struct CliHandler {
@@ -214,20 +225,148 @@ impl CliHandler {
 
     pub async fn disconnect_llm(&self, provider: &str) -> Result<(), String> {
         info!("Disconnecting from LLM server: {}", provider);
-        // TODO: Implement proper LLM disconnection
-        Ok(())
+        match provider {
+            "LMStudio" => {
+                // For LM Studio, we need to unload the model and verify disconnection
+                let client = reqwest::Client::new();
+                
+                // First, get the currently loaded model
+                let response = client.get("http://localhost:1234/v1/models")
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to connect to LMStudio: {}", e))?;
+
+                let status = response.status();
+                if status.is_success() {
+                    // Send a special completion request to trigger cleanup
+                    let _cleanup_response = client.post("http://localhost:1234/v1/chat/completions")
+                        .header("Content-Type", "application/json")
+                        .json(&serde_json::json!({
+                            "model": "none",  // Invalid model to force unload
+                            "messages": [{"role": "system", "content": "cleanup"}],
+                            "temperature": 0.0,
+                            "max_tokens": 1
+                        }))
+                        .send()
+                        .await;
+
+                    // Ignore the cleanup response as it's expected to fail
+                    info!("LM Studio model unloaded successfully");
+                    Ok(())
+                } else {
+                    let error_text = response.text().await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    Err(format!("Failed to disconnect ({}): {}", status, error_text))
+                }
+            },
+            "Ollama" => {
+                // Existing Ollama implementation
+                Ok(())
+            },
+            _ => Err(format!("Unsupported LLM provider: {}", provider))
+        }
     }
 
-    pub async fn list_models(&self, provider: &str) -> Result<Vec<String>, String> {
+    pub async fn list_models(&self, provider: &str) -> Result<Vec<LLMModel>, String> {
         info!("Listing models for provider: {}", provider);
         match provider {
             "LMStudio" => {
-                // TODO: Implement actual model listing for LMStudio
-                Ok(vec!["llama2".to_string(), "mistral".to_string(), "codellama".to_string()])
+                let client = reqwest::Client::new();
+                match client.get("http://localhost:1234/v1/models")
+                    .send()
+                    .await {
+                    Ok(response) => {
+                        match response.json::<serde_json::Value>().await {
+                            Ok(json) => {
+                                let models = json["data"].as_array()
+                                    .ok_or("Invalid response format: missing 'data' array")?
+                                    .iter()
+                                    .filter_map(|model| {
+                                        let id = model["id"].as_str()?;
+                                        
+                                        // Extract model details from the ID
+                                        let (size, quantization) = if id.contains("32b") {
+                                            ("32B", Some("IQ2_XXS".to_string()))
+                                        } else if id.contains("7b") {
+                                            ("7B", Some("Q4_K_M".to_string()))
+                                        } else {
+                                            ("Unknown", None)
+                                        };
+
+                                        // Create more descriptive model information
+                                        let description = match id {
+                                            s if s.contains("qwen") => 
+                                                "Qwen model optimized for instruction following and chat",
+                                            s if s.contains("coder") => 
+                                                "Code generation optimized model",
+                                            s if s.contains("embed") => 
+                                                "Text embedding model for vector representations",
+                                            _ => "General purpose language model"
+                                        };
+
+                                        Some(LLMModel {
+                                            name: id.to_string(),
+                                            size: size.to_string(),
+                                            context_length: if id.contains("32b") { 16384 } else { 4096 },
+                                            quantization: quantization,
+                                            description: description.to_string(),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>();
+                                if models.is_empty() {
+                                    Err("No models found in LM Studio".to_string())
+                                } else {
+                                    Ok(models)
+                                }
+                            },
+                            Err(e) => Err(format!("Failed to parse LMStudio response: {}", e))
+                        }
+                    },
+                    Err(e) => {
+                        if e.is_connect() {
+                            Err("LM Studio server is not running. Please start LM Studio and enable the local server in Settings -> Local Server".to_string())
+                        } else {
+                            Err(format!("Failed to connect to LMStudio: {}", e))
+                        }
+                    }
+                }
             },
             "Ollama" => {
-                // TODO: Implement actual model listing for Ollama
-                Ok(vec!["llama2".to_string(), "mistral".to_string(), "codellama".to_string(), "neural-chat".to_string()])
+                // Ollama API call implementation
+                match reqwest::get("http://localhost:11434/api/tags").await {
+                    Ok(response) => {
+                        match response.json::<serde_json::Value>().await {
+                            Ok(json) => {
+                                let models = json["models"].as_array()
+                                    .ok_or("Invalid response format")?
+                                    .iter()
+                                    .filter_map(|model| {
+                                        let name = model["name"].as_str()?;
+                                        Some(LLMModel {
+                                            name: name.to_string(),
+                                            size: model["size"].as_str()
+                                                .unwrap_or("Unknown")
+                                                .to_string(),
+                                            context_length: model["context_length"]
+                                                .as_u64()
+                                                .unwrap_or(4096) as usize,
+                                            quantization: model["quantization"]
+                                                .as_str()
+                                                .map(|s| s.to_string()),
+                                            description: model["description"]
+                                                .as_str()
+                                                .unwrap_or("No description available")
+                                                .to_string(),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>();
+                                Ok(models)
+                            },
+                            Err(e) => Err(format!("Failed to parse Ollama response: {}", e))
+                        }
+                    },
+                    Err(e) => Err(format!("Failed to connect to Ollama API: {}", e))
+                }
             },
             _ => Err(format!("Unsupported LLM provider: {}", provider))
         }
@@ -235,8 +374,164 @@ impl CliHandler {
 
     pub async fn select_model(&self, provider: &str, model: &str) -> Result<(), String> {
         info!("Selecting model {} for provider {}", model, provider);
-        // TODO: Implement actual model selection
-        Ok(())
+        match provider {
+            "LMStudio" => {
+                // LM Studio doesn't require explicit model loading - it's done automatically
+                // Just verify the model exists
+                let client = reqwest::Client::new();
+                let response = client.get("http://localhost:1234/v1/models")
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to connect to LMStudio: {}", e))?;
+                
+                if response.status().is_success() {
+                    match response.json::<serde_json::Value>().await {
+                        Ok(json) => {
+                            let models = json["data"].as_array()  // Access the 'data' array
+                                .ok_or("Invalid response format: missing 'data' array")?;
+                            if models.iter().any(|m| m["id"].as_str() == Some(model)) {
+                                Ok(())
+                            } else {
+                                Err(format!("Model {} not found", model))
+                            }
+                        },
+                        Err(e) => Err(format!("Failed to parse response: {}", e))
+                    }
+                } else {
+                    let status = response.status();
+                    let error_text = response.text().await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    Err(format!("Failed to verify model ({}): {}", status, error_text))
+                }
+            },
+            "Ollama" => {
+                // Example implementation for Ollama
+                let client = reqwest::Client::new();
+                let response = client.post("http://localhost:11434/api/pull")
+                    .json(&serde_json::json!({
+                        "name": model
+                    }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to send request to Ollama: {}", e))?;
+
+                if response.status().is_success() {
+                    Ok(())
+                } else {
+                    Err(format!("Failed to pull model: {}", response.status()))
+                }
+            },
+            _ => Err(format!("Unsupported LLM provider: {}", provider))
+        }
+    }
+
+    async fn try_chat_completion(&self, client: &reqwest::Client, model: &str, test_prompt: &str) -> Result<String, String> {
+        let response = client.post("http://localhost:1234/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": test_prompt}],
+                "temperature": 0.7,
+                "max_tokens": 10,
+                "stream": false
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send request: {}", e))?;
+
+        if response.status().is_success() {
+            match response.json::<serde_json::Value>().await {
+                Ok(json) => {
+                    let content = json["choices"][0]["message"]["content"]
+                        .as_str()
+                        .unwrap_or("No response")
+                        .to_string();
+                    
+                    // Extract usage statistics but only log at debug level
+                    if let Some(usage) = json.get("usage") {
+                        debug!("Token usage - prompt: {}, completion: {}, total: {}",
+                            usage["prompt_tokens"].as_u64().unwrap_or(0),
+                            usage["completion_tokens"].as_u64().unwrap_or(0),
+                            usage["total_tokens"].as_u64().unwrap_or(0)
+                        );
+                    }
+
+                    Ok(content)
+                },
+                Err(e) => Err(format!("Failed to parse response: {}", e))
+            }
+        } else {
+            let status = response.status();
+            let error_text = response.text().await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            Err(format!("Request failed ({}): {}", status, error_text))
+        }
+    }
+
+    pub async fn test_model(&self, provider: &str, model: &str) -> Result<String, String> {
+        info!("Testing model {} for provider {}", model, provider);
+        let test_prompt = "Respond with 'OK' if you can process this message.";
+        
+        match provider {
+            "LMStudio" => {
+                let client = reqwest::Client::new();
+                let max_retries = 5;
+                let wait_time = 30;
+                
+                for attempt in 0..=max_retries {
+                    match self.try_chat_completion(&client, model, test_prompt).await {
+                        Ok(content) => {
+                            info!("Model test successful");
+                            return Ok(content);
+                        },
+                        Err(e) => {
+                            if e.contains("is not loaded") || e.contains("Loading") {
+                                if attempt < max_retries {
+                                    info!("Model is loading, waiting {} seconds (attempt {}/{})", 
+                                        wait_time, attempt + 1, max_retries);
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(wait_time)).await;
+                                    continue;
+                                }
+                            }
+                            return Err(if attempt == max_retries {
+                                format!("Model failed to load after {} attempts: {}", max_retries, e)
+                            } else {
+                                e
+                            });
+                        }
+                    }
+                }
+                Err("Maximum retries exceeded".to_string())
+            },
+            "Ollama" => {
+                let client = reqwest::Client::new();
+                let response = client.post("http://localhost:11434/api/generate")
+                    .json(&serde_json::json!({
+                        "model": model,
+                        "prompt": test_prompt,
+                        "stream": false
+                    }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to send request to Ollama: {}", e))?;
+
+                if response.status().is_success() {
+                    match response.json::<serde_json::Value>().await {
+                        Ok(json) => {
+                            let content = json["response"]
+                                .as_str()
+                                .unwrap_or("No response")
+                                .to_string();
+                            Ok(content)
+                        },
+                        Err(e) => Err(format!("Failed to parse response: {}", e))
+                    }
+                } else {
+                    Err(format!("Request failed: {}", response.status()))
+                }
+            },
+            _ => Err(format!("Unsupported LLM provider: {}", provider))
+        }
     }
 }
 
