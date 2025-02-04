@@ -217,5 +217,26 @@ impl CliHandler {
         // TODO: Implement proper LLM disconnection
         Ok(())
     }
+
+    pub async fn list_models(&self, provider: &str) -> Result<Vec<String>, String> {
+        info!("Listing models for provider: {}", provider);
+        match provider {
+            "LMStudio" => {
+                // TODO: Implement actual model listing for LMStudio
+                Ok(vec!["llama2".to_string(), "mistral".to_string(), "codellama".to_string()])
+            },
+            "Ollama" => {
+                // TODO: Implement actual model listing for Ollama
+                Ok(vec!["llama2".to_string(), "mistral".to_string(), "codellama".to_string(), "neural-chat".to_string()])
+            },
+            _ => Err(format!("Unsupported LLM provider: {}", provider))
+        }
+    }
+
+    pub async fn select_model(&self, provider: &str, model: &str) -> Result<(), String> {
+        info!("Selecting model {} for provider {}", model, provider);
+        // TODO: Implement actual model selection
+        Ok(())
+    }
 }
 
