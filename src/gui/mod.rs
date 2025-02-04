@@ -15,6 +15,7 @@ use std::ops::Deref;
 use crate::types::agent::{Task, TaskStatus};
 use iced::widget::container::StyleSheet;
 use serde_json;
+use sysinfo;
 
 #[derive(Debug, Clone)]
 struct NavStyle;
@@ -922,27 +923,200 @@ impl NexaApp {
         // Determine the main content based on the current view
         let main_content: iced::Element<Message> = match self.current_view {
             View::Overview => {
-                let _status_color = match self.server_status.as_str() {
+                let status_color = match self.server_status.as_str() {
                     "Running" => iced::Color::from_rgb(0.0, 0.8, 0.0),
                     "Stopped" => iced::Color::from_rgb(0.8, 0.0, 0.0),
                     _ => iced::Color::from_rgb(0.8, 0.8, 0.0),
                 };
+
+                let mut sys_info = sysinfo::System::new_all();
+                sys_info.refresh_all();
+                let cpu_usage = sys_info.global_cpu_info().cpu_usage();
+                let total_memory = sys_info.total_memory() as f64 / 1024.0 / 1024.0; // Convert to MB
+                let used_memory = sys_info.used_memory() as f64 / 1024.0 / 1024.0;
+                let memory_usage = (used_memory / total_memory * 100.0) as f64;
+
                 iced::widget::Column::new()
                     .spacing(20)
                     .push(
-                        iced::widget::Text::new(format!("Status: {}", self.server_status))
-                            .size(24)
+                        container(
+                            Row::new()
+                                .spacing(20)
+                                .push(
+                                    container(
+                                        Column::new()
+                                            .spacing(10)
+                                            .push(text("Server Status").size(18))
+                                            .push(
+                                                text(&self.server_status)
+                                                    .size(24)
+                                                    .style(status_color)
+                                            )
+                                    )
+                                    .padding(20)
+                                    .style(iced::theme::Container::Box)
+                                    .width(Length::Fixed(200.0))
+                                )
+                                .push(
+                                    container(
+                                        Column::new()
+                                            .spacing(10)
+                                            .push(text("Uptime").size(18))
+                                            .push(
+                                                text(format!("{:02}:{:02}:{:02}", 
+                                                    self.uptime.as_secs() / 3600,
+                                                    (self.uptime.as_secs() % 3600) / 60,
+                                                    self.uptime.as_secs() % 60
+                                                ))
+                                                .size(24)
+                                            )
+                                    )
+                                    .padding(20)
+                                    .style(iced::theme::Container::Box)
+                                    .width(Length::Fixed(200.0))
+                                )
+                        )
                     )
                     .push(
-                        iced::widget::container(
-                            iced::widget::Column::new()
-                                .spacing(5)
-                                .push(iced::widget::Text::new(format!("Uptime: {:?}", self.uptime)))
-                                .push(iced::widget::Text::new(format!("Total Connections: {}", self.total_connections)))
-                                .push(iced::widget::Text::new(format!("Active Connections: {}", self.active_connections)))
-                                .push(iced::widget::Text::new(format!("Failed Connections: {}", self.failed_connections)))
+                        container(
+                            Row::new()
+                                .spacing(20)
+                                .push(
+                                    // System Performance Section
+                                    container(
+                                        Column::new()
+                                            .spacing(15)
+                                            .push(text("System Performance").size(18))
+                                            .push(
+                                                Row::new()
+                                                    .spacing(10)
+                                                    .push(text("CPU Usage:").width(Length::Fixed(120.0)))
+                                                    .push(
+                                                        container(
+                                                            text(format!("{:.1}%", cpu_usage))
+                                                                .style(if cpu_usage > 80.0 {
+                                                                    Color::from_rgb(0.8, 0.0, 0.0)
+                                                                } else if cpu_usage > 60.0 {
+                                                                    Color::from_rgb(0.8, 0.8, 0.0)
+                                                                } else {
+                                                                    Color::from_rgb(0.0, 0.8, 0.0)
+                                                                })
+                                                        )
+                                                        .width(Length::Fill)
+                                                    )
+                                            )
+                                            .push(
+                                                Row::new()
+                                                    .spacing(10)
+                                                    .push(text("Memory Usage:").width(Length::Fixed(120.0)))
+                                                    .push(
+                                                        container(
+                                                            text(format!("{:.1}% ({:.1}GB / {:.1}GB)", 
+                                                                memory_usage,
+                                                                used_memory / 1024.0,
+                                                                total_memory / 1024.0
+                                                            ))
+                                                            .style(if memory_usage > 80.0 {
+                                                                Color::from_rgb(0.8, 0.0, 0.0)
+                                                            } else if memory_usage > 60.0 {
+                                                                Color::from_rgb(0.8, 0.8, 0.0)
+                                                            } else {
+                                                                Color::from_rgb(0.0, 0.8, 0.0)
+                                                            })
+                                                        )
+                                                        .width(Length::Fill)
+                                                    )
+                                            )
+                                    )
+                                    .padding(20)
+                                    .style(iced::theme::Container::Box)
+                                    .width(Length::Fill)
+                                )
                         )
-                        .padding(10)
+                    )
+                    .push(
+                        container(
+                            Row::new()
+                                .spacing(20)
+                                .push(
+                                    // Connection Metrics Section
+                                    container(
+                                        Column::new()
+                                            .spacing(15)
+                                            .push(text("Connection Metrics").size(18))
+                                            .push(
+                                                Row::new()
+                                                    .spacing(10)
+                                                    .push(text("Active:").width(Length::Fixed(120.0)))
+                                                    .push(text(format!("{}", self.active_connections)))
+                                            )
+                                            .push(
+                                                Row::new()
+                                                    .spacing(10)
+                                                    .push(text("Total:").width(Length::Fixed(120.0)))
+                                                    .push(text(format!("{}", self.total_connections)))
+                                            )
+                                            .push(
+                                                Row::new()
+                                                    .spacing(10)
+                                                    .push(text("Failed:").width(Length::Fixed(120.0)))
+                                                    .push(
+                                                        text(format!("{}", self.failed_connections))
+                                                            .style(Color::from_rgb(0.8, 0.0, 0.0))
+                                                    )
+                                            )
+                                    )
+                                    .padding(20)
+                                    .style(iced::theme::Container::Box)
+                                    .width(Length::Fill)
+                                )
+                                .push(
+                                    // LLM Metrics Section
+                                    container(
+                                        Column::new()
+                                            .spacing(15)
+                                            .push(text("LLM Metrics").size(18))
+                                            .push(
+                                                Row::new()
+                                                    .spacing(10)
+                                                    .push(text("Active Models:").width(Length::Fixed(120.0)))
+                                                    .push(
+                                                        text(format!("{}", 
+                                                            self.llm_servers.iter()
+                                                                .filter(|s| s.status == LLMStatus::Connected)
+                                                                .count()
+                                                        ))
+                                                    )
+                                            )
+                                            .push(
+                                                Row::new()
+                                                    .spacing(10)
+                                                    .push(text("Total Models:").width(Length::Fixed(120.0)))
+                                                    .push(
+                                                        text(format!("{}", 
+                                                            self.llm_servers.iter()
+                                                                .map(|s| s.available_models.len())
+                                                                .sum::<usize>()
+                                                        ))
+                                                    )
+                                            )
+                                    )
+                                    .padding(20)
+                                    .style(iced::theme::Container::Box)
+                                    .width(Length::Fill)
+                                )
+                        )
+                    )
+                    .push(
+                        container(
+                            Column::new()
+                                .spacing(15)
+                                .push(text("Recent Activity").size(18))
+                                .push(self.view_log_section("System Logs", &self.server_logs))
+                        )
+                        .padding(20)
+                        .style(iced::theme::Container::Box)
+                        .width(Length::Fill)
                     )
                     .into()
             }
