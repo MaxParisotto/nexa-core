@@ -1,7 +1,7 @@
 use iced::{Element, Length, Theme, Color, Subscription, Command};
 use iced::executor;
 use iced::window;
-use iced::widget::{row, text, container, scrollable, Column, Button, TextInput, PickList, Rule, Row};
+use iced::widget::{row, text, container, scrollable, Column, Button, TextInput, PickList, Rule, Row, Checkbox};
 use iced::{Application, Settings};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,8 +13,8 @@ use log::info;
 use chrono::Utc;
 use std::ops::Deref;
 use crate::types::agent::{Task, TaskStatus};
-use super::llm::LLMConnection;
 use iced::widget::container::StyleSheet;
+use serde_json;
 
 #[derive(Debug, Clone)]
 struct NavStyle;
@@ -104,6 +104,15 @@ pub enum Message {
     AgentDeleted,
     AgentsLoaded(Vec<CliAgent>),
     Error(String),
+    ToggleMCPLocalFiles(bool),
+    ToggleMCPDatabases(bool),
+    ToggleMCPAPIs(bool),
+    ToggleMCPCodeAnalysis(bool),
+    ToggleMCPTextProcessing(bool),
+    ToggleMCPDataTransform(bool),
+    MCPCustomPromptsChanged(String),
+    ToggleMCPRootAccess(bool),
+    MCPTransportChanged(String),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -170,6 +179,13 @@ enum LLMStatus {
     Error,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CustomPrompt {
+    pub name: String,
+    pub template: String,
+    pub parameters: Vec<String>,
+}
+
 pub struct NexaApp {
     handler: Arc<CliHandler>,
     server_status: String,
@@ -208,6 +224,83 @@ pub struct NexaApp {
     backoff_ms_input: String,
     max_backoff_ms_input: String,
     timeout_seconds_input: String,
+    mcp_local_files: bool,
+    mcp_databases: bool,
+    mcp_apis: bool,
+    mcp_code_analysis: bool,
+    mcp_text_processing: bool,
+    mcp_data_transform: bool,
+    mcp_custom_prompts: String,
+    mcp_root_access: bool,
+    mcp_transport: String,
+}
+
+impl Default for NexaApp {
+    fn default() -> Self {
+        Self {
+            handler: Arc::new(CliHandler::new()),
+            server_status: "Stopped".to_string(),
+            total_connections: 0,
+            active_connections: 0,
+            failed_connections: 0,
+            last_error: None,
+            uptime: Duration::from_secs(0),
+            should_exit: false,
+            server_logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            connection_logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            error_logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            new_agent_name: String::new(),
+            new_agent_capabilities: String::new(),
+            agents: Vec::new(),
+            agent_options: Vec::new(),
+            new_task_description: String::new(),
+            new_task_priority: TaskPriority::Normal,
+            selected_agent: None,
+            tasks: Vec::new(),
+            max_connections_input: String::new(),
+            current_view: View::Overview,
+            llm_servers: vec![
+                LLMServer {
+                    provider: "LMStudio".to_string(),
+                    address: "http://localhost:1234".to_string(),
+                    status: LLMStatus::Disconnected,
+                    last_error: None,
+                    available_models: Vec::new(),
+                    model_names: Vec::new(),
+                    selected_model: None,
+                },
+                LLMServer {
+                    provider: "Ollama".to_string(),
+                    address: "http://localhost:11434".to_string(),
+                    status: LLMStatus::Disconnected,
+                    last_error: None,
+                    available_models: Vec::new(),
+                    model_names: Vec::new(),
+                    selected_model: None,
+                },
+            ],
+            new_llm_address: String::new(),
+            new_llm_provider: String::new(),
+            empty_models: Vec::new(),
+            selected_provider: String::new(),
+            selected_model: String::new(),
+            max_concurrent_tasks_input: "5".to_string(),
+            priority_threshold_input: "2".to_string(),
+            max_retries_input: "3".to_string(),
+            backoff_ms_input: "1000".to_string(),
+            max_backoff_ms_input: "10000".to_string(),
+            timeout_seconds_input: "30".to_string(),
+            mcp_local_files: false,
+            mcp_databases: false,
+            mcp_apis: false,
+            mcp_code_analysis: false,
+            mcp_text_processing: false,
+            mcp_data_transform: false,
+            mcp_custom_prompts: String::new(),
+            mcp_root_access: false,
+            mcp_transport: "WebSocket".to_string(),
+        }
+    }
 }
 
 impl NexaApp {
@@ -266,6 +359,15 @@ impl NexaApp {
             backoff_ms_input: "1000".to_string(),
             max_backoff_ms_input: "10000".to_string(),
             timeout_seconds_input: "30".to_string(),
+            mcp_local_files: false,
+            mcp_databases: false,
+            mcp_apis: false,
+            mcp_code_analysis: false,
+            mcp_text_processing: false,
+            mcp_data_transform: false,
+            mcp_custom_prompts: String::new(),
+            mcp_root_access: false,
+            mcp_transport: "WebSocket".to_string(),
         }
     }
 
@@ -365,96 +467,109 @@ impl NexaApp {
                                                 .width(Length::Fixed(300.0))
                                         )
                                 )
+                        )
+                        .padding(10)
+                        .style(iced::theme::Container::Box)
+                    )
+                    .push(
+                        container(
+                            Column::new()
+                                .spacing(10)
+                                .push(text("MCP Configuration").size(16))
                                 .push(
                                     Row::new()
                                         .spacing(10)
-                                        .push(text("Capabilities:").width(Length::Fixed(120.0)))
+                                        .push(text("Data Sources:").width(Length::Fixed(120.0)))
                                         .push(
-                                            TextInput::new("Enter capabilities (comma-separated)...", &self.new_agent_capabilities)
-                                                .on_input(Message::AgentCapabilitiesChanged)
+                                            Column::new()
+                                                .spacing(5)
+                                                .push(
+                                                    Checkbox::new(
+                                                        "Local Files",
+                                                        self.mcp_local_files,
+                                                        |checked| Message::ToggleMCPLocalFiles(checked)
+                                                    )
+                                                )
+                                                .push(
+                                                    Checkbox::new(
+                                                        "Databases",
+                                                        self.mcp_databases,
+                                                        |checked| Message::ToggleMCPDatabases(checked)
+                                                    )
+                                                )
+                                                .push(
+                                                    Checkbox::new(
+                                                        "APIs",
+                                                        self.mcp_apis,
+                                                        |checked| Message::ToggleMCPAPIs(checked)
+                                                    )
+                                                )
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Tools:").width(Length::Fixed(120.0)))
+                                        .push(
+                                            Column::new()
+                                                .spacing(5)
+                                                .push(
+                                                    Checkbox::new(
+                                                        "Code Analysis",
+                                                        self.mcp_code_analysis,
+                                                        |checked| Message::ToggleMCPCodeAnalysis(checked)
+                                                    )
+                                                )
+                                                .push(
+                                                    Checkbox::new(
+                                                        "Text Processing",
+                                                        self.mcp_text_processing,
+                                                        |checked| Message::ToggleMCPTextProcessing(checked)
+                                                    )
+                                                )
+                                                .push(
+                                                    Checkbox::new(
+                                                        "Data Transformation",
+                                                        self.mcp_data_transform,
+                                                        |checked| Message::ToggleMCPDataTransform(checked)
+                                                    )
+                                                )
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Custom Prompts:").width(Length::Fixed(120.0)))
+                                        .push(
+                                            TextInput::new("Enter custom prompts (JSON)...", &self.mcp_custom_prompts)
+                                                .on_input(Message::MCPCustomPromptsChanged)
                                                 .padding(5)
                                                 .width(Length::Fixed(300.0))
                                         )
                                 )
-                        )
-                        .padding(10)
-                        .style(iced::theme::Container::Box)
-                    )
-                    .push(
-                        container(
-                            Column::new()
-                                .spacing(10)
-                                .push(text("LLM Configuration").size(16))
                                 .push(
                                     Row::new()
                                         .spacing(10)
-                                        .push(text("Provider:").width(Length::Fixed(120.0)))
-                                        .push({
-                                            let providers = self.llm_servers.iter()
-                                                .map(|s| s.provider.clone())
-                                                .collect::<Vec<_>>();
+                                        .push(text("Root Access:").width(Length::Fixed(120.0)))
+                                        .push(
+                                            Checkbox::new(
+                                                "Allow root access",
+                                                self.mcp_root_access,
+                                                |checked| Message::ToggleMCPRootAccess(checked)
+                                            )
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Transport:").width(Length::Fixed(120.0)))
+                                        .push(
                                             PickList::new(
-                                                providers,
-                                                Some(self.selected_provider.clone()),
-                                                Message::LLMProviderChanged
+                                                vec!["WebSocket".to_string(), "gRPC".to_string(), "HTTP/2".to_string()],
+                                                Some(self.mcp_transport.clone()),
+                                                Message::MCPTransportChanged
                                             )
                                             .width(Length::Fixed(200.0))
-                                        })
-                                )
-                                .push(
-                                    Row::new()
-                                        .spacing(10)
-                                        .push(text("Model:").width(Length::Fixed(120.0)))
-                                        .push({
-                                            let models = self.llm_servers.iter()
-                                                .find(|s| s.provider == self.selected_provider)
-                                                .map(|server| server.model_names.clone())
-                                                .unwrap_or_default();
-                                            PickList::new(
-                                                models,
-                                                Some(self.selected_model.clone()),
-                                                |model| Message::SelectModel(self.selected_provider.clone(), model)
-                                            )
-                                            .width(Length::Fixed(200.0))
-                                        })
-                                )
-                        )
-                        .padding(10)
-                        .style(iced::theme::Container::Box)
-                    )
-                    .push(
-                        container(
-                            Column::new()
-                                .spacing(10)
-                                .push(text("Performance Settings").size(16))
-                                .push(
-                                    Row::new()
-                                        .spacing(10)
-                                        .push(text("Max Concurrent Tasks:").width(Length::Fixed(180.0)))
-                                        .push(
-                                            TextInput::new("5", &self.max_concurrent_tasks_input)
-                                                .on_input(Message::MaxConcurrentTasksChanged)
-                                                .width(Length::Fixed(80.0))
-                                        )
-                                )
-                                .push(
-                                    Row::new()
-                                        .spacing(10)
-                                        .push(text("Priority Threshold:").width(Length::Fixed(180.0)))
-                                        .push(
-                                            TextInput::new("2", &self.priority_threshold_input)
-                                                .on_input(Message::PriorityThresholdChanged)
-                                                .width(Length::Fixed(80.0))
-                                        )
-                                )
-                                .push(
-                                    Row::new()
-                                        .spacing(10)
-                                        .push(text("Timeout (seconds):").width(Length::Fixed(180.0)))
-                                        .push(
-                                            TextInput::new("30", &self.timeout_seconds_input)
-                                                .on_input(Message::TimeoutSecondsChanged)
-                                                .width(Length::Fixed(80.0))
                                         )
                                 )
                         )
@@ -465,36 +580,12 @@ impl NexaApp {
                         container(
                             Column::new()
                                 .spacing(10)
-                                .push(text("Retry Policy").size(16))
+                                .push(text("Capabilities:").width(Length::Fixed(120.0)))
                                 .push(
-                                    Row::new()
-                                        .spacing(10)
-                                        .push(text("Max Retries:").width(Length::Fixed(180.0)))
-                                        .push(
-                                            TextInput::new("3", &self.max_retries_input)
-                                                .on_input(Message::MaxRetriesChanged)
-                                                .width(Length::Fixed(80.0))
-                                        )
-                                )
-                                .push(
-                                    Row::new()
-                                        .spacing(10)
-                                        .push(text("Backoff (ms):").width(Length::Fixed(180.0)))
-                                        .push(
-                                            TextInput::new("1000", &self.backoff_ms_input)
-                                                .on_input(Message::BackoffMsChanged)
-                                                .width(Length::Fixed(80.0))
-                                        )
-                                )
-                                .push(
-                                    Row::new()
-                                        .spacing(10)
-                                        .push(text("Max Backoff (ms):").width(Length::Fixed(180.0)))
-                                        .push(
-                                            TextInput::new("10000", &self.max_backoff_ms_input)
-                                                .on_input(Message::MaxBackoffMsChanged)
-                                                .width(Length::Fixed(80.0))
-                                        )
+                                    TextInput::new("Enter capabilities (comma-separated)...", &self.new_agent_capabilities)
+                                        .on_input(Message::AgentCapabilitiesChanged)
+                                        .padding(5)
+                                        .width(Length::Fixed(300.0))
                                 )
                         )
                         .padding(10)
@@ -878,34 +969,54 @@ impl NexaApp {
 
     fn handle_agent_creation(&mut self) -> Command<Message> {
         let name = self.new_agent_name.clone();
-        let capabilities = self.new_agent_capabilities
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<String>>();
         
-        // Get the provider and model from the selected LLM server
-        let (provider, model) = if let Some(server) = self.llm_servers
-            .iter()
-            .find(|s| s.status == LLMStatus::Connected) {
-            (
-                server.provider.clone(),
-                server.selected_model.clone().unwrap_or_default()
-            )
-        } else {
-            self.add_log(
-                "No connected LLM server available. Please connect to a server first.",
-                LogLevel::Error,
-                "error"
-            );
-            return Command::none();
-        };
+        // Build MCP capabilities
+        let mut capabilities = Vec::new();
+        
+        // Add data source capabilities
+        if self.mcp_local_files {
+            capabilities.push("mcp:data_source:local_files".to_string());
+        }
+        if self.mcp_databases {
+            capabilities.push("mcp:data_source:databases".to_string());
+        }
+        if self.mcp_apis {
+            capabilities.push("mcp:data_source:apis".to_string());
+        }
+        
+        // Add tool capabilities
+        if self.mcp_code_analysis {
+            capabilities.push("mcp:tool:code_analysis".to_string());
+        }
+        if self.mcp_text_processing {
+            capabilities.push("mcp:tool:text_processing".to_string());
+        }
+        if self.mcp_data_transform {
+            capabilities.push("mcp:tool:data_transform".to_string());
+        }
+        
+        // Add custom prompts if provided
+        if !self.mcp_custom_prompts.is_empty() {
+            if let Ok(prompts) = serde_json::from_str::<Vec<CustomPrompt>>(&self.mcp_custom_prompts) {
+                for prompt in prompts {
+                    capabilities.push(format!("mcp:prompts:{}:{}", prompt.name, prompt.template));
+                }
+            }
+        }
+        
+        // Add root access if enabled
+        if self.mcp_root_access {
+            capabilities.push("mcp:root:enabled".to_string());
+        }
+        
+        // Add transport configuration
+        capabilities.push(format!("mcp:transport:{}", self.mcp_transport.to_lowercase()));
 
         let config = AgentConfig {
             max_concurrent_tasks: self.max_concurrent_tasks_input.parse().unwrap_or(5),
             priority_threshold: self.priority_threshold_input.parse().unwrap_or(2),
-            llm_provider: provider,
-            llm_model: model,
+            llm_provider: self.new_llm_provider.clone(),
+            llm_model: self.selected_model.clone(),
             retry_policy: RetryPolicy {
                 max_retries: self.max_retries_input.parse().unwrap_or(3),
                 backoff_ms: self.backoff_ms_input.parse().unwrap_or(1000),
@@ -1586,6 +1697,42 @@ impl Application for NexaGui {
                 }
                 Message::Error(e) => {
                     app.add_log(format!("Error: {}", e), LogLevel::Error, "error");
+                    Command::none()
+                }
+                Message::ToggleMCPLocalFiles(value) => {
+                    app.mcp_local_files = value;
+                    Command::none()
+                }
+                Message::ToggleMCPDatabases(value) => {
+                    app.mcp_databases = value;
+                    Command::none()
+                }
+                Message::ToggleMCPAPIs(value) => {
+                    app.mcp_apis = value;
+                    Command::none()
+                }
+                Message::ToggleMCPCodeAnalysis(value) => {
+                    app.mcp_code_analysis = value;
+                    Command::none()
+                }
+                Message::ToggleMCPTextProcessing(value) => {
+                    app.mcp_text_processing = value;
+                    Command::none()
+                }
+                Message::ToggleMCPDataTransform(value) => {
+                    app.mcp_data_transform = value;
+                    Command::none()
+                }
+                Message::MCPCustomPromptsChanged(prompts) => {
+                    app.mcp_custom_prompts = prompts;
+                    Command::none()
+                }
+                Message::ToggleMCPRootAccess(value) => {
+                    app.mcp_root_access = value;
+                    Command::none()
+                }
+                Message::MCPTransportChanged(transport) => {
+                    app.mcp_transport = transport;
                     Command::none()
                 }
             }

@@ -133,7 +133,7 @@ pub enum WorkflowStatus {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum AgentAction {
-    ProcessText { input: String, max_tokens: usize },
+    ProcessText { input: String, _max_tokens: usize },
     GenerateCode { prompt: String, language: String },
     AnalyzeCode { code: String, aspects: Vec<String> },
     CustomTask { task_type: String, parameters: serde_json::Value },
@@ -919,7 +919,7 @@ impl CliHandler {
         let client = reqwest::Client::new();
         
         match action {
-            AgentAction::ProcessText { input, max_tokens } => {
+            AgentAction::ProcessText { input, _max_tokens } => {
                 self.try_chat_completion(&client, &agent.config.llm_model, input).await
             },
             AgentAction::GenerateCode { prompt, language } => {
