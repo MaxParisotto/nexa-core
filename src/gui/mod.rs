@@ -1,18 +1,18 @@
 use iced::{Element, Length, Theme, Color, Subscription, Command};
 use iced::executor;
 use iced::window;
-use iced::widget::{row, text, container, scrollable, Column, Button, TextInput, PickList, Rule};
+use iced::widget::{row, text, container, scrollable, Column, Button, TextInput, PickList, Rule, Row};
 use iced::{Application, Settings};
 use std::sync::Arc;
 use std::time::Duration;
 use std::collections::VecDeque;
 use crate::server::ServerMetrics;
 use crate::error::NexaError;
-use crate::cli::{CliHandler, LLMModel};
+use crate::cli::{CliHandler, LLMModel, AgentConfig, RetryPolicy, WorkflowStep, AgentWorkflow, Agent as CliAgent};
 use log::info;
 use chrono::Utc;
 use std::ops::Deref;
-use crate::types::agent::{Agent, AgentStatus, Task, TaskStatus};
+use crate::types::agent::{Task, TaskStatus};
 use super::llm::LLMConnection;
 use iced::widget::container::StyleSheet;
 
@@ -54,7 +54,7 @@ pub enum Message {
     CreateAgent,
     AgentNameChanged(String),
     AgentCapabilitiesChanged(String),
-    AgentCreated(Result<(), String>),
+    AgentCreated(Result<CliAgent, String>),
     // Task management
     CreateTask,
     TaskDescriptionChanged(String),
@@ -81,6 +81,29 @@ pub enum Message {
     RefreshModels(String),  // provider name
     TestModel(String, String),  // (provider, model)
     ModelTested(String, String, Result<String, String>),  // (provider, model, result)
+    CreateNewAgent(String, AgentConfig),
+    CreateNewWorkflow(String, Vec<WorkflowStep>),
+    WorkflowCreated(Result<AgentWorkflow, String>),
+    ExecuteWorkflow(String),
+    WorkflowExecuted(Result<(), String>),
+    UpdateAgentCapabilities(String, Vec<String>),
+    CapabilitiesUpdated(Result<(), String>),
+    SetAgentHierarchy(String, String),
+    HierarchyUpdated(Result<(), String>),
+    MaxConcurrentTasksChanged(String),
+    PriorityThresholdChanged(String),
+    MaxRetriesChanged(String),
+    BackoffMsChanged(String),
+    MaxBackoffMsChanged(String),
+    TimeoutSecondsChanged(String),
+    TestAgent(String),
+    ToggleAgentStatus(String),
+    DeleteAgent(String),
+    AgentTested,
+    AgentStatusToggled,
+    AgentDeleted,
+    AgentsLoaded(Vec<CliAgent>),
+    Error(String),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -162,7 +185,7 @@ pub struct NexaApp {
     // Agent management
     new_agent_name: String,
     new_agent_capabilities: String,
-    agents: Vec<Agent>,
+    agents: Vec<CliAgent>,
     agent_options: Vec<String>,
     // Task management
     new_task_description: String,
@@ -177,6 +200,14 @@ pub struct NexaApp {
     new_llm_address: String,
     new_llm_provider: String,
     empty_models: Vec<String>,
+    selected_provider: String,
+    selected_model: String,
+    max_concurrent_tasks_input: String,
+    priority_threshold_input: String,
+    max_retries_input: String,
+    backoff_ms_input: String,
+    max_backoff_ms_input: String,
+    timeout_seconds_input: String,
 }
 
 impl NexaApp {
@@ -227,13 +258,21 @@ impl NexaApp {
             new_llm_address: String::new(),
             new_llm_provider: String::new(),
             empty_models: Vec::new(),
+            selected_provider: String::new(),
+            selected_model: String::new(),
+            max_concurrent_tasks_input: "5".to_string(),
+            priority_threshold_input: "2".to_string(),
+            max_retries_input: "3".to_string(),
+            backoff_ms_input: "1000".to_string(),
+            max_backoff_ms_input: "10000".to_string(),
+            timeout_seconds_input: "30".to_string(),
         }
     }
 
-    fn add_log(&mut self, message: String, level: LogLevel, log_type: &str) {
+    fn add_log(&mut self, message: impl Into<String>, level: LogLevel, log_type: &str) {
         let entry = LogEntry {
             timestamp: chrono::Utc::now(),
-            message,
+            message: message.into(),
             level,
             source: log_type.to_string(),
         };
@@ -299,46 +338,181 @@ impl NexaApp {
     }
 
     fn view_agents(&self) -> Element<Message> {
-        let mut content = Column::new()
+        let content = Column::new()
             .spacing(20)
-            .push(text("Agent Management").size(24))
+            .push(text("Agent Management").size(24));
+
+        // Create New Agent Section
+        let new_agent_section = Column::new()
+            .spacing(10)
+            .push(text("Create New Agent").size(20))
             .push(
                 Column::new()
-                    .spacing(10)
-                    .push(text("Create New Agent"))
+                    .spacing(20)
                     .push(
-                        TextInput::new("Enter agent name...", &self.new_agent_name)
-                            .on_input(Message::AgentNameChanged)
+                        container(
+                            Column::new()
+                                .spacing(10)
+                                .push(text("Basic Settings").size(16))
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Name:").width(Length::Fixed(120.0)))
+                                        .push(
+                                            TextInput::new("Enter agent name...", &self.new_agent_name)
+                                                .on_input(Message::AgentNameChanged)
+                                                .padding(5)
+                                                .width(Length::Fixed(300.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Capabilities:").width(Length::Fixed(120.0)))
+                                        .push(
+                                            TextInput::new("Enter capabilities (comma-separated)...", &self.new_agent_capabilities)
+                                                .on_input(Message::AgentCapabilitiesChanged)
+                                                .padding(5)
+                                                .width(Length::Fixed(300.0))
+                                        )
+                                )
+                        )
+                        .padding(10)
+                        .style(iced::theme::Container::Box)
                     )
                     .push(
-                        TextInput::new("Enter capabilities (comma-separated)...", &self.new_agent_capabilities)
-                            .on_input(Message::AgentCapabilitiesChanged)
+                        container(
+                            Column::new()
+                                .spacing(10)
+                                .push(text("LLM Configuration").size(16))
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Provider:").width(Length::Fixed(120.0)))
+                                        .push({
+                                            let providers = self.llm_servers.iter()
+                                                .map(|s| s.provider.clone())
+                                                .collect::<Vec<_>>();
+                                            PickList::new(
+                                                providers,
+                                                Some(self.selected_provider.clone()),
+                                                Message::LLMProviderChanged
+                                            )
+                                            .width(Length::Fixed(200.0))
+                                        })
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Model:").width(Length::Fixed(120.0)))
+                                        .push({
+                                            let models = self.llm_servers.iter()
+                                                .find(|s| s.provider == self.selected_provider)
+                                                .map(|server| server.model_names.clone())
+                                                .unwrap_or_default();
+                                            PickList::new(
+                                                models,
+                                                Some(self.selected_model.clone()),
+                                                |model| Message::SelectModel(self.selected_provider.clone(), model)
+                                            )
+                                            .width(Length::Fixed(200.0))
+                                        })
+                                )
+                        )
+                        .padding(10)
+                        .style(iced::theme::Container::Box)
                     )
                     .push(
-                        Button::new("Create Agent")
-                            .on_press(Message::CreateAgent)
+                        container(
+                            Column::new()
+                                .spacing(10)
+                                .push(text("Performance Settings").size(16))
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Max Concurrent Tasks:").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("5", &self.max_concurrent_tasks_input)
+                                                .on_input(Message::MaxConcurrentTasksChanged)
+                                                .width(Length::Fixed(80.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Priority Threshold:").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("2", &self.priority_threshold_input)
+                                                .on_input(Message::PriorityThresholdChanged)
+                                                .width(Length::Fixed(80.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Timeout (seconds):").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("30", &self.timeout_seconds_input)
+                                                .on_input(Message::TimeoutSecondsChanged)
+                                                .width(Length::Fixed(80.0))
+                                        )
+                                )
+                        )
+                        .padding(10)
+                        .style(iced::theme::Container::Box)
+                    )
+                    .push(
+                        container(
+                            Column::new()
+                                .spacing(10)
+                                .push(text("Retry Policy").size(16))
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Max Retries:").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("3", &self.max_retries_input)
+                                                .on_input(Message::MaxRetriesChanged)
+                                                .width(Length::Fixed(80.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Backoff (ms):").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("1000", &self.backoff_ms_input)
+                                                .on_input(Message::BackoffMsChanged)
+                                                .width(Length::Fixed(80.0))
+                                        )
+                                )
+                                .push(
+                                    Row::new()
+                                        .spacing(10)
+                                        .push(text("Max Backoff (ms):").width(Length::Fixed(180.0)))
+                                        .push(
+                                            TextInput::new("10000", &self.max_backoff_ms_input)
+                                                .on_input(Message::MaxBackoffMsChanged)
+                                                .width(Length::Fixed(80.0))
+                                        )
+                                )
+                        )
+                        .padding(10)
+                        .style(iced::theme::Container::Box)
                     )
             );
 
-        // List existing agents
-        content = content.push(Rule::horizontal(10))
-            .push(text("Existing Agents").size(20));
-
-        for agent in &self.agents {
-            content = content.push(
-                container(
-                    Column::new()
-                        .spacing(5)
-                        .push(text(&format!("Name: {}", agent.id)))
-                        .push(text(&format!("Status: {:?}", agent.status)))
-                        .push(text(&format!("Capabilities: {}", agent.capabilities.join(", "))))
-                )
+        let content = content.push(
+            container(new_agent_section)
+                .width(Length::Fill)
                 .padding(10)
                 .style(iced::theme::Container::Box)
-            );
-        }
+        );
 
-        scrollable(content).height(Length::Fill).into()
+        let scrollable_content = scrollable(content)
+            .height(Length::Fill);
+
+        scrollable_content.into()
     }
 
     fn view_tasks(&self) -> Element<Message> {
@@ -701,6 +875,50 @@ impl NexaApp {
             .height(iced::Length::Fill)
             .into()
     }
+
+    fn handle_agent_creation(&mut self) -> Command<Message> {
+        let name = self.new_agent_name.clone();
+        let capabilities = self.new_agent_capabilities
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<String>>();
+        
+        // Get the provider and model from the selected LLM server
+        let (provider, model) = if let Some(server) = self.llm_servers
+            .iter()
+            .find(|s| s.status == LLMStatus::Connected) {
+            (
+                server.provider.clone(),
+                server.selected_model.clone().unwrap_or_default()
+            )
+        } else {
+            self.add_log(
+                "No connected LLM server available. Please connect to a server first.",
+                LogLevel::Error,
+                "error"
+            );
+            return Command::none();
+        };
+
+        let config = AgentConfig {
+            max_concurrent_tasks: self.max_concurrent_tasks_input.parse().unwrap_or(5),
+            priority_threshold: self.priority_threshold_input.parse().unwrap_or(2),
+            llm_provider: provider,
+            llm_model: model,
+            retry_policy: RetryPolicy {
+                max_retries: self.max_retries_input.parse().unwrap_or(3),
+                backoff_ms: self.backoff_ms_input.parse().unwrap_or(1000),
+                max_backoff_ms: self.max_backoff_ms_input.parse().unwrap_or(10000),
+            },
+            timeout_seconds: self.timeout_seconds_input.parse().unwrap_or(30),
+        };
+
+        let handler = self.handler.clone();
+        Command::perform(async move {
+            handler.deref().create_agent(name, config).await
+        }, |result| Message::AgentCreated(result))
+    }
 }
 
 // Custom style for the sidebar container
@@ -895,16 +1113,7 @@ impl Application for NexaGui {
                     Command::none()
                 }
                 Message::CreateAgent => {
-                    let name = app.new_agent_name.clone();
-                    let capabilities: Vec<String> = app.new_agent_capabilities
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    let handler = app.handler.clone();
-                    Command::perform(async move {
-                        handler.deref().create_agent(name, capabilities).await
-                    }, Message::AgentCreated)
+                    app.handle_agent_creation()
                 }
                 Message::AgentNameChanged(name) => {
                     app.new_agent_name = name;
@@ -916,44 +1125,9 @@ impl Application for NexaGui {
                 }
                 Message::AgentCreated(result) => {
                     match result {
-                        Ok(_) => {
-                            // Capture agent id and capabilities before clearing
-                            let agent_id = app.new_agent_name.clone();
-                            let capabilities = app.new_agent_capabilities.clone().to_lowercase();
-
-                            app.agents.push(Agent {
-                                id: agent_id.clone(),
-                                name: agent_id.clone(),
-                                capabilities: app.new_agent_capabilities
-                                    .split(',')
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty())
-                                    .collect(),
-                                status: AgentStatus::Idle,
-                                current_task: None,
-                                last_heartbeat: Utc::now(),
-                            });
-                            app.agent_options.push(agent_id.clone());
-                            app.new_agent_name.clear();
-                            app.new_agent_capabilities.clear();
-                            app.add_log("Agent created successfully".to_string(), LogLevel::Info, "server");
-
-                            let mut extra_cmds: Vec<Command<Message>> = vec![];
-                            if capabilities.contains("lmstudio") {
-                                let aid = agent_id.clone();
-                                extra_cmds.push(Command::perform(async move {
-                                    let res = LLMConnection::connect("LMStudio", aid.clone()).await;
-                                    (aid, "LMStudio".to_string(), res.map_err(|e| e.to_string()))
-                                }, |(aid, provider, res)| Message::LLMConnected(aid, provider, res)));
-                            }
-                            if capabilities.contains("ollama") {
-                                let aid = agent_id.clone();
-                                extra_cmds.push(Command::perform(async move {
-                                    let res = LLMConnection::connect("Ollama", aid.clone()).await;
-                                    (aid, "Ollama".to_string(), res.map_err(|e| e.to_string()))
-                                }, |(aid, provider, res)| Message::LLMConnected(aid, provider, res)));
-                            }
-                            return Command::batch(extra_cmds);
+                        Ok(agent) => {
+                            app.agents.push(agent.clone());
+                            app.add_log(format!("Agent {} created successfully", agent.name), LogLevel::Info, "server");
                         },
                         Err(e) => {
                             app.add_log(format!("Failed to create agent: {}", e), LogLevel::Error, "error");
@@ -1052,6 +1226,8 @@ impl Application for NexaGui {
                                     LogLevel::Info,
                                     "connection"
                                 );
+                                // Update selected provider when connection is successful
+                                app.selected_provider = provider.clone();
                             },
                             Err(ref e) => {
                                 server.status = LLMStatus::Error;
@@ -1160,6 +1336,8 @@ impl Application for NexaGui {
                 Message::SelectModel(provider, model) => {
                     if let Some(server) = app.llm_servers.iter_mut().find(|s| s.provider == provider) {
                         server.selected_model = Some(model.clone());
+                        // Update selected model when selection is successful
+                        app.selected_model = model.clone();
                     }
                     let handler = app.handler.clone();
                     let provider_clone = provider.clone();
@@ -1225,6 +1403,189 @@ impl Application for NexaGui {
                             );
                         }
                     }
+                    Command::none()
+                }
+                Message::CreateNewAgent(name, config) => {
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().create_agent(name, config).await
+                    }, Message::AgentCreated)
+                }
+                Message::CreateNewWorkflow(name, steps) => {
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().create_workflow(name, steps).await
+                    }, Message::WorkflowCreated)
+                }
+                Message::WorkflowCreated(result) => {
+                    match result {
+                        Ok(workflow) => {
+                            app.add_log(format!("Workflow {} created successfully", workflow.name), LogLevel::Info, "server");
+                        },
+                        Err(e) => {
+                            app.add_log(format!("Failed to create workflow: {}", e), LogLevel::Error, "error");
+                        }
+                    }
+                    Command::none()
+                }
+                Message::ExecuteWorkflow(workflow_id) => {
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().execute_workflow(&workflow_id).await
+                    }, Message::WorkflowExecuted)
+                }
+                Message::WorkflowExecuted(result) => {
+                    match result {
+                        Ok(_) => {
+                            app.add_log("Workflow executed successfully".to_string(), LogLevel::Info, "server");
+                        },
+                        Err(e) => {
+                            app.add_log(format!("Workflow execution failed: {}", e), LogLevel::Error, "error");
+                        }
+                    }
+                    Command::none()
+                }
+                Message::UpdateAgentCapabilities(agent_id, capabilities) => {
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().update_agent_capabilities(&agent_id, capabilities).await
+                    }, Message::CapabilitiesUpdated)
+                }
+                Message::CapabilitiesUpdated(result) => {
+                    match result {
+                        Ok(_) => {
+                            app.add_log("Agent capabilities updated successfully".to_string(), LogLevel::Info, "server");
+                        },
+                        Err(e) => {
+                            app.add_log(format!("Failed to update capabilities: {}", e), LogLevel::Error, "error");
+                        }
+                    }
+                    Command::none()
+                }
+                Message::SetAgentHierarchy(parent_id, child_id) => {
+                    let handler = app.handler.clone();
+                    Command::perform(async move {
+                        handler.deref().set_agent_hierarchy(&parent_id, &child_id).await
+                    }, Message::HierarchyUpdated)
+                }
+                Message::HierarchyUpdated(result) => {
+                    match result {
+                        Ok(_) => {
+                            app.add_log("Agent hierarchy updated successfully".to_string(), LogLevel::Info, "server");
+                        },
+                        Err(e) => {
+                            app.add_log(format!("Failed to update hierarchy: {}", e), LogLevel::Error, "error");
+                        }
+                    }
+                    Command::none()
+                }
+                Message::MaxConcurrentTasksChanged(value) => {
+                    app.max_concurrent_tasks_input = value;
+                    Command::none()
+                }
+                Message::PriorityThresholdChanged(value) => {
+                    app.priority_threshold_input = value;
+                    Command::none()
+                }
+                Message::MaxRetriesChanged(value) => {
+                    app.max_retries_input = value;
+                    Command::none()
+                }
+                Message::BackoffMsChanged(value) => {
+                    app.backoff_ms_input = value;
+                    Command::none()
+                }
+                Message::MaxBackoffMsChanged(value) => {
+                    app.max_backoff_ms_input = value;
+                    Command::none()
+                }
+                Message::TimeoutSecondsChanged(value) => {
+                    app.timeout_seconds_input = value;
+                    Command::none()
+                }
+                Message::TestAgent(id) => {
+                    let handler = app.handler.clone();
+                    Command::perform(
+                        async move {
+                            handler.test_agent(&id).await
+                        },
+                        |result| match result {
+                            Ok(_) => Message::AgentTested,
+                            Err(e) => Message::Error(e),
+                        }
+                    )
+                }
+                Message::ToggleAgentStatus(agent_id) => {
+                    let handler = app.handler.clone();
+                    Command::perform(
+                        async move {
+                            handler.deref().update_agent_capabilities(&agent_id, vec![]).await?;
+                            Ok(())
+                        },
+                        |result: Result<(), String>| match result {
+                            Ok(_) => Message::AgentStatusToggled,
+                            Err(e) => Message::Error(e),
+                        }
+                    )
+                }
+                Message::DeleteAgent(agent_id) => {
+                    let handler = app.handler.clone();
+                    Command::perform(
+                        async move {
+                            handler.deref().update_agent_capabilities(&agent_id, vec![]).await?;
+                            Ok(())
+                        },
+                        |result: Result<(), String>| match result {
+                            Ok(_) => Message::AgentDeleted,
+                            Err(e) => Message::Error(e),
+                        }
+                    )
+                }
+                Message::AgentTested => {
+                    // Refresh agent list after testing
+                    let handler = app.handler.clone();
+                    Command::perform(
+                        async move {
+                            handler.list_agents(None).await
+                        },
+                        |result| match result {
+                            Ok(agents) => Message::AgentsLoaded(agents),
+                            Err(e) => Message::Error(e),
+                        }
+                    )
+                }
+                Message::AgentStatusToggled => {
+                    // Refresh agent list after status toggle
+                    let handler = app.handler.clone();
+                    Command::perform(
+                        async move {
+                            handler.list_agents(None).await
+                        },
+                        |result| match result {
+                            Ok(agents) => Message::AgentsLoaded(agents),
+                            Err(e) => Message::Error(e),
+                        }
+                    )
+                }
+                Message::AgentDeleted => {
+                    // Refresh agent list after deletion
+                    let handler = app.handler.clone();
+                    Command::perform(
+                        async move {
+                            handler.list_agents(None).await
+                        },
+                        |result| match result {
+                            Ok(agents) => Message::AgentsLoaded(agents),
+                            Err(e) => Message::Error(e),
+                        }
+                    )
+                }
+                Message::AgentsLoaded(agents) => {
+                    app.agents = agents;
+                    Command::none()
+                }
+                Message::Error(e) => {
+                    app.add_log(format!("Error: {}", e), LogLevel::Error, "error");
                     Command::none()
                 }
             }

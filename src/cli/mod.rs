@@ -19,6 +19,9 @@ use nix::libc;
 use crate::gui::TaskPriority;
 use reqwest;
 use serde_json;
+use uuid;
+use chrono;
+use serde;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -46,6 +49,94 @@ pub struct LLMModel {
     pub context_length: usize,
     pub quantization: Option<String>,
     pub description: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Agent {
+    pub id: String,
+    pub name: String,
+    pub capabilities: Vec<String>,
+    pub status: AgentStatus,
+    pub parent_id: Option<String>,
+    pub children: Vec<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_active: chrono::DateTime<chrono::Utc>,
+    pub config: AgentConfig,
+    pub metrics: AgentMetrics,
+    pub workflows: Vec<String>,
+    pub supported_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentConfig {
+    pub max_concurrent_tasks: usize,
+    pub priority_threshold: i32,
+    pub llm_provider: String,
+    pub llm_model: String,
+    pub retry_policy: RetryPolicy,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RetryPolicy {
+    pub max_retries: u32,
+    pub backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentMetrics {
+    pub tasks_completed: u64,
+    pub tasks_failed: u64,
+    pub average_response_time_ms: f64,
+    pub uptime_seconds: u64,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum AgentStatus {
+    Active,
+    Idle,
+    Busy,
+    Error,
+    Maintenance,
+    Offline,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentWorkflow {
+    pub id: String,
+    pub name: String,
+    pub steps: Vec<WorkflowStep>,
+    pub status: WorkflowStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_run: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkflowStep {
+    pub agent_id: String,
+    pub action: AgentAction,
+    pub dependencies: Vec<String>,
+    pub retry_policy: Option<RetryPolicy>,
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum WorkflowStatus {
+    Ready,
+    Running,
+    Completed,
+    Failed,
+    Paused,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum AgentAction {
+    ProcessText { input: String, max_tokens: usize },
+    GenerateCode { prompt: String, language: String },
+    AnalyzeCode { code: String, aspects: Vec<String> },
+    CustomTask { task_type: String, parameters: serde_json::Value },
 }
 
 pub struct CliHandler {
@@ -175,11 +266,183 @@ impl CliHandler {
         Ok(())
     }
 
-    /// Creates a new agent with the given name and capabilities.
-    pub async fn create_agent(&self, name: String, capabilities: Vec<String>) -> Result<(), String> {
-        info!("Creating agent {} with capabilities: {:?}", name, capabilities);
-        // TODO: Implement actual agent creation
-        Ok(())
+    /// Creates a new agent with the given configuration
+    pub async fn create_agent(&self, name: String, config: AgentConfig) -> Result<Agent, String> {
+        info!("Creating agent {} with configuration: {:?}", name, config);
+        
+        let agent = Agent {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            capabilities: Vec::new(),
+            status: AgentStatus::Idle,
+            parent_id: None,
+            children: Vec::new(),
+            created_at: chrono::Utc::now(),
+            last_active: chrono::Utc::now(),
+            config,
+            metrics: AgentMetrics {
+                tasks_completed: 0,
+                tasks_failed: 0,
+                average_response_time_ms: 0.0,
+                uptime_seconds: 0,
+                last_error: None,
+            },
+            workflows: Vec::new(),
+            supported_actions: Vec::new(),
+        };
+
+        // Save agent to persistent storage
+        self.save_agent(&agent).await?;
+        
+        info!("Agent {} created successfully with ID: {}", agent.name, agent.id);
+        Ok(agent)
+    }
+
+    /// Tests an agent's capabilities with a sample task
+    pub async fn test_agent(&self, agent_id: &str) -> Result<String, String> {
+        info!("Testing agent {}", agent_id);
+        
+        let agent = self.get_agent(agent_id).await?;
+        
+        // Prepare a test prompt based on agent's capabilities
+        let test_prompt = format!(
+            "Respond with 'OK' and list your capabilities: {}",
+            agent.capabilities.join(", ")
+        );
+
+        // Test the agent using its configured LLM
+        let start_time = std::time::Instant::now();
+        let result = self.try_chat_completion(
+            &reqwest::Client::new(),
+            &agent.config.llm_model,
+            &test_prompt
+        ).await;
+
+        // Update agent metrics
+        let mut updated_agent = agent.clone();
+        match &result {
+            Ok(_) => {
+                updated_agent.metrics.tasks_completed += 1;
+                updated_agent.metrics.average_response_time_ms = 
+                    (updated_agent.metrics.average_response_time_ms * (updated_agent.metrics.tasks_completed - 1) as f64
+                    + start_time.elapsed().as_millis() as f64) / updated_agent.metrics.tasks_completed as f64;
+            },
+            Err(e) => {
+                updated_agent.metrics.tasks_failed += 1;
+                updated_agent.metrics.last_error = Some(e.clone());
+                updated_agent.status = AgentStatus::Error;
+            }
+        }
+        
+        self.save_agent(&updated_agent).await?;
+        
+        result
+    }
+
+    /// Updates an agent's capabilities
+    pub async fn update_agent_capabilities(&self, agent_id: &str, capabilities: Vec<String>) -> Result<(), String> {
+        info!("Updating capabilities for agent {}: {:?}", agent_id, capabilities);
+        
+        let mut agent = self.get_agent(agent_id).await?;
+        agent.capabilities = capabilities;
+        agent.last_active = chrono::Utc::now();
+        
+        self.save_agent(&agent).await
+    }
+
+    /// Creates a hierarchical relationship between agents
+    pub async fn set_agent_hierarchy(&self, parent_id: &str, child_id: &str) -> Result<(), String> {
+        info!("Setting agent hierarchy: parent={}, child={}", parent_id, child_id);
+        
+        let mut parent = self.get_agent(parent_id).await?;
+        let mut child = self.get_agent(child_id).await?;
+        
+        // Prevent circular dependencies
+        if child.id == parent_id || parent.parent_id.as_ref() == Some(&child.id) {
+            return Err("Circular dependency detected".to_string());
+        }
+        
+        // Update parent-child relationships
+        parent.children.push(child.id.clone());
+        child.parent_id = Some(parent_id.to_string());
+        
+        // Save both agents
+        self.save_agent(&parent).await?;
+        self.save_agent(&child).await
+    }
+
+    /// Retrieves an agent by ID
+    async fn get_agent(&self, agent_id: &str) -> Result<Agent, String> {
+        let path = self.get_agent_file_path(agent_id);
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| format!("Failed to read agent file: {}", e))?;
+            
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse agent data: {}", e))
+    }
+
+    /// Saves an agent to persistent storage
+    async fn save_agent(&self, agent: &Agent) -> Result<(), String> {
+        let path = self.get_agent_file_path(&agent.id);
+        
+        // Ensure directory exists
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create agent directory: {}", e))?;
+        }
+        
+        let content = serde_json::to_string_pretty(agent)
+            .map_err(|e| format!("Failed to serialize agent data: {}", e))?;
+            
+        tokio::fs::write(&path, content)
+            .await
+            .map_err(|e| format!("Failed to write agent file: {}", e))
+    }
+
+    /// Gets the file path for an agent's persistent storage
+    fn get_agent_file_path(&self, agent_id: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from("/tmp/nexa/agents")
+            .join(format!("{}.json", agent_id))
+    }
+
+    /// Lists all agents with optional filtering
+    pub async fn list_agents(&self, status: Option<AgentStatus>) -> Result<Vec<Agent>, String> {
+        let agents_dir = std::path::PathBuf::from("/tmp/nexa/agents");
+        
+        if !agents_dir.exists() {
+            return Ok(Vec::new());
+        }
+        
+        let mut agents = Vec::new();
+        let mut read_dir = tokio::fs::read_dir(&agents_dir)
+            .await
+            .map_err(|e| format!("Failed to read agents directory: {}", e))?;
+            
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
+                if let Ok(agent) = serde_json::from_str::<Agent>(&content) {
+                    if status.is_none() || status.as_ref() == Some(&agent.status) {
+                        agents.push(agent);
+                    }
+                }
+            }
+        }
+        
+        Ok(agents)
+    }
+
+    /// Gets the agent hierarchy as a tree structure
+    pub async fn get_agent_hierarchy(&self) -> Result<Vec<Agent>, String> {
+        let all_agents = self.list_agents(None).await?;
+        
+        // Filter to get only root agents (those without parents)
+        let root_agents: Vec<Agent> = all_agents.into_iter()
+            .filter(|agent| agent.parent_id.is_none())
+            .collect();
+            
+        Ok(root_agents)
     }
 
     /// Creates a new task with the given description, priority and agent assignment.
@@ -532,6 +795,214 @@ impl CliHandler {
             },
             _ => Err(format!("Unsupported LLM provider: {}", provider))
         }
+    }
+
+    /// Creates a new workflow
+    pub async fn create_workflow(&self, name: String, steps: Vec<WorkflowStep>) -> Result<AgentWorkflow, String> {
+        info!("Creating workflow {} with {} steps", name, steps.len());
+        
+        // Validate all agent IDs exist
+        for step in &steps {
+            self.get_agent(&step.agent_id).await?;
+        }
+        
+        let workflow = AgentWorkflow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            steps,
+            status: WorkflowStatus::Ready,
+            created_at: chrono::Utc::now(),
+            last_run: None,
+        };
+        
+        self.save_workflow(&workflow).await?;
+        info!("Workflow created successfully with ID: {}", workflow.id);
+        Ok(workflow)
+    }
+
+    /// Executes a workflow
+    pub async fn execute_workflow(&self, workflow_id: &str) -> Result<(), String> {
+        info!("Executing workflow {}", workflow_id);
+        
+        let mut workflow = self.get_workflow(workflow_id).await?;
+        workflow.status = WorkflowStatus::Running;
+        self.save_workflow(&workflow).await?;
+        
+        // Track completed steps
+        let mut completed_steps = std::collections::HashSet::new();
+        
+        // Execute steps in order, respecting dependencies
+        while completed_steps.len() < workflow.steps.len() {
+            let mut executed_any = false;
+            
+            for (index, step) in workflow.steps.iter().enumerate() {
+                // Skip if already completed
+                if completed_steps.contains(&index) {
+                    continue;
+                }
+                
+                // Check if all dependencies are met
+                let deps_met = step.dependencies.iter()
+                    .all(|dep_id| completed_steps.contains(&dep_id.parse::<usize>().unwrap_or(0)));
+                
+                if deps_met {
+                    // Execute the step
+                    match self.execute_workflow_step(step).await {
+                        Ok(_) => {
+                            completed_steps.insert(index);
+                            executed_any = true;
+                        },
+                        Err(e) => {
+                            workflow.status = WorkflowStatus::Failed;
+                            self.save_workflow(&workflow).await?;
+                            return Err(format!("Step {} failed: {}", index, e));
+                        }
+                    }
+                }
+            }
+            
+            if !executed_any && completed_steps.len() < workflow.steps.len() {
+                return Err("Workflow deadlocked - circular dependencies detected".to_string());
+            }
+        }
+        
+        workflow.status = WorkflowStatus::Completed;
+        workflow.last_run = Some(chrono::Utc::now());
+        self.save_workflow(&workflow).await?;
+        
+        Ok(())
+    }
+
+    /// Executes a single workflow step
+    async fn execute_workflow_step(&self, step: &WorkflowStep) -> Result<String, String> {
+        let agent = self.get_agent(&step.agent_id).await?;
+        
+        // Prepare retry policy
+        let retry_policy = step.retry_policy.as_ref()
+            .unwrap_or(&agent.config.retry_policy);
+            
+        // Prepare timeout
+        let timeout = step.timeout_seconds
+            .unwrap_or(agent.config.timeout_seconds);
+            
+        // Execute with retries and timeout
+        let mut last_error = None;
+        for attempt in 0..=retry_policy.max_retries {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(timeout),
+                self.execute_agent_action(&agent, &step.action)
+            ).await {
+                Ok(result) => match result {
+                    Ok(output) => return Ok(output),
+                    Err(e) => {
+                        last_error = Some(e);
+                        if attempt < retry_policy.max_retries {
+                            let backoff = std::cmp::min(
+                                retry_policy.backoff_ms * (2_u64.pow(attempt)),
+                                retry_policy.max_backoff_ms
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_millis(backoff)).await;
+                        }
+                    }
+                },
+                Err(_) => {
+                    return Err(format!("Step execution timed out after {} seconds", timeout));
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or_else(|| "Unknown error".to_string()))
+    }
+
+    /// Executes a specific action using an agent
+    async fn execute_agent_action(&self, agent: &Agent, action: &AgentAction) -> Result<String, String> {
+        let client = reqwest::Client::new();
+        
+        match action {
+            AgentAction::ProcessText { input, max_tokens } => {
+                self.try_chat_completion(&client, &agent.config.llm_model, input).await
+            },
+            AgentAction::GenerateCode { prompt, language } => {
+                let code_prompt = format!("Generate {} code for: {}", language, prompt);
+                self.try_chat_completion(&client, &agent.config.llm_model, &code_prompt).await
+            },
+            AgentAction::AnalyzeCode { code, aspects } => {
+                let analysis_prompt = format!(
+                    "Analyze the following code, focusing on {}: \n\n{}",
+                    aspects.join(", "),
+                    code
+                );
+                self.try_chat_completion(&client, &agent.config.llm_model, &analysis_prompt).await
+            },
+            AgentAction::CustomTask { task_type, parameters } => {
+                // Handle custom task types
+                let prompt = format!(
+                    "Execute {} task with parameters: {}",
+                    task_type,
+                    serde_json::to_string_pretty(parameters).unwrap_or_default()
+                );
+                self.try_chat_completion(&client, &agent.config.llm_model, &prompt).await
+            }
+        }
+    }
+
+    /// Saves a workflow to persistent storage
+    async fn save_workflow(&self, workflow: &AgentWorkflow) -> Result<(), String> {
+        let path = self.get_workflow_file_path(&workflow.id);
+        
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create workflow directory: {}", e))?;
+        }
+        
+        let content = serde_json::to_string_pretty(workflow)
+            .map_err(|e| format!("Failed to serialize workflow data: {}", e))?;
+            
+        tokio::fs::write(&path, content)
+            .await
+            .map_err(|e| format!("Failed to write workflow file: {}", e))
+    }
+
+    /// Gets a workflow by ID
+    async fn get_workflow(&self, workflow_id: &str) -> Result<AgentWorkflow, String> {
+        let path = self.get_workflow_file_path(workflow_id);
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| format!("Failed to read workflow file: {}", e))?;
+            
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse workflow data: {}", e))
+    }
+
+    /// Gets the file path for a workflow's persistent storage
+    fn get_workflow_file_path(&self, workflow_id: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from("/tmp/nexa/workflows")
+            .join(format!("{}.json", workflow_id))
+    }
+
+    /// Lists all workflows
+    pub async fn list_workflows(&self) -> Result<Vec<AgentWorkflow>, String> {
+        let workflows_dir = std::path::PathBuf::from("/tmp/nexa/workflows");
+        
+        if !workflows_dir.exists() {
+            return Ok(Vec::new());
+        }
+        
+        let mut workflows = Vec::new();
+        let mut read_dir = tokio::fs::read_dir(&workflows_dir)
+            .await
+            .map_err(|e| format!("Failed to read workflows directory: {}", e))?;
+            
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
+                if let Ok(workflow) = serde_json::from_str::<AgentWorkflow>(&content) {
+                    workflows.push(workflow);
+                }
+            }
+        }
+        
+        Ok(workflows)
     }
 }
 
