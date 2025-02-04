@@ -9,7 +9,7 @@ harness = true
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [alias]
-test = "test -- --nocapture --test-threads=1 --show-output"
+nexa_test = "test -- --nocapture --test-threads=1 --show-output"
 
 [build]
 target-dir = "target"

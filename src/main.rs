@@ -1,6 +1,4 @@
-extern crate nexa_core;
-
-use nexa_core::{cli, error, gui, llm, mcp, types};
+use nexa_core::{cli, error, gui};
 
 use clap::Parser;
 use cli::CliHandler;

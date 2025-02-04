@@ -3,6 +3,7 @@ use std::time::Duration;
 use nexa_core::error::NexaError;
 use proptest::prelude::*;
 use uuid::Uuid;
+use nexa_core::mcp::cluster::ElectionTimeout;
 
 proptest! {
     #[test]
@@ -14,10 +15,7 @@ proptest! {
     ) {
         let config = ClusterConfig {
             heartbeat_interval: Duration::from_millis(heartbeat_ms),
-            election_timeout: (
-                Duration::from_millis(election_ms),
-                Duration::from_millis(election_ms * 2)
-            ),
+            election_timeout: ElectionTimeout(Duration::from_millis(election_ms), Duration::from_millis(election_ms * 2)),
             min_quorum_size: quorum_size,
             node_timeout: Duration::from_secs(5),
             replication_factor: 3,
@@ -35,10 +33,7 @@ async fn test_cluster_config() -> Result<(), NexaError> {
     // Initialize cluster configuration
     let config = ClusterConfig {
         heartbeat_interval: Duration::from_millis(100),
-        election_timeout: (
-            Duration::from_millis(500),
-            Duration::from_millis(1000)
-        ),
+        election_timeout: ElectionTimeout(Duration::from_millis(500), Duration::from_millis(1000)),
         min_quorum_size: 2,
         node_timeout: Duration::from_secs(5),
         replication_factor: 3,
