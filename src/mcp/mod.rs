@@ -6,16 +6,23 @@
 //! - Protocol implementation
 //! - Registry management
 
+// MCP Module Declarations separated by responsibilities
+
+// Core Modules
 pub mod registry;
 pub mod server;
 pub mod protocol;
 pub mod tokens;
+
+// Cluster Management Modules
 pub mod cluster;
 pub mod config;
 pub mod loadbalancer;
 pub mod buffer;
 pub mod processor;
 pub mod cluster_processor;
+
+// Metrics and Monitoring Modules
 pub mod metrics;
 
 use std::path::PathBuf;
@@ -32,6 +39,29 @@ use crate::tokens::{ModelType, TokenUsage};
 use crate::error::NexaError;
 use log::{error, info};
 
+// -----------------------------------------------------
+// Persistent Global State for MCP Module
+// -----------------------------------------------------
+use once_cell::sync::Lazy;
+use std::sync::RwLock as StdRwLock;
+
+/// McpState holds persistent state data for the MCP module.
+#[derive(Debug, Default)]
+pub struct McpState {
+    /// An example counter to track some state persistently.
+    pub counter: u64,
+    // Add more persistent fields as needed
+}
+
+/// Global persistent state for the MCP module.
+pub static GLOBAL_MCP_STATE: Lazy<StdRwLock<McpState>> = Lazy::new(|| {
+    StdRwLock::new(McpState::default())
+});
+
+/// Returns a reference to the global MCP state.
+pub fn global_state() -> &'static StdRwLock<McpState> {
+    &GLOBAL_MCP_STATE
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MCPMessage {

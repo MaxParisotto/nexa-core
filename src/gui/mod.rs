@@ -14,6 +14,30 @@ use chrono::Utc;
 use std::ops::Deref;
 use crate::types::agent::{Agent, AgentStatus, Task, TaskStatus};
 use super::llm::LLMConnection;
+use iced::widget::container::StyleSheet;
+
+#[derive(Debug, Clone)]
+struct NavStyle;
+
+impl container::StyleSheet for NavStyle {
+    type Style = Theme;
+
+    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
+        container::Appearance {
+            background: Some(iced::Background::Color(Color::from_rgb(0.95, 0.95, 0.95))),
+            border_radius: 4.0.into(),
+            border_width: 1.0,
+            border_color: Color::from_rgb(0.8, 0.8, 0.8),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<NavStyle> for iced::theme::Container {
+    fn from(_: NavStyle) -> Self {
+        iced::theme::Container::Custom(Box::new(NavStyle))
+    }
+}
 
 const MAX_LOG_ENTRIES: usize = 100;
 
@@ -193,31 +217,6 @@ impl NexaApp {
         .into()
     }
 
-    fn view_navigation(&self) -> Element<Message> {
-        let nav_button = |label: &str, view: View| {
-            let style = if self.current_view == view {
-                iced::theme::Button::Primary
-            } else {
-                iced::theme::Button::Secondary
-            };
-
-            Button::new(text(label))
-                .on_press(Message::ChangeView(view))
-                .style(style)
-        };
-
-        row![
-            nav_button("Overview", View::Overview),
-            nav_button("Agents", View::Agents),
-            nav_button("Tasks", View::Tasks),
-            nav_button("Connections", View::Connections),
-            nav_button("Settings", View::Settings),
-        ]
-        .spacing(10)
-        .padding(10)
-        .into()
-    }
-
     fn view_agents(&self) -> Element<Message> {
         let mut content = Column::new()
             .spacing(20)
@@ -371,79 +370,139 @@ impl NexaApp {
             .into()
     }
 
-    pub fn view(&self) -> Element<Message> {
-        let content = Column::new()
+    /// Returns a Webmin-style sidebar with navigation buttons.
+    fn view_sidebar(&self) -> Element<Message> {
+        let sidebar = iced::widget::Column::new()
             .spacing(20)
             .padding(20)
-            .push(self.view_navigation())
+            .push(iced::widget::Text::new("Menu").size(28))
             .push(
-                match self.current_view {
-                    View::Overview => {
-                        let status_color = match self.server_status.as_str() {
-                            "Running" => Color::from_rgb(0.0, 0.8, 0.0),
-                            "Stopped" => Color::from_rgb(0.8, 0.0, 0.0),
-                            _ => Color::from_rgb(0.8, 0.8, 0.0),
-                        };
-
-                        Column::new()
-                            .spacing(20)
-                            .push(
-                                text(&format!("Status: {}", self.server_status))
-                                    .style(status_color)
-                                    .size(24)
-                            )
-                            .push(
-                                container(Column::new()
-                                    .spacing(5)
-                                    .push(text(format!("Uptime: {:?}", self.uptime)))
-                                    .push(text(format!("Total Connections: {}", self.total_connections)))
-                                    .push(text(format!("Active Connections: {}", self.active_connections)))
-                                    .push(text(format!("Failed Connections: {}", self.failed_connections)))
-                                )
-                                .padding(10)
-                            )
-                            .push(Rule::horizontal(10))
-                            .push(
-                                if let Some(error) = &self.last_error {
-                                    container(
-                                        text(format!("Error: {}", error))
-                                            .style(Color::from_rgb(0.8, 0.0, 0.0))
-                                    )
-                                    .padding(10)
-                                } else {
-                                    container(text("No errors"))
-                                        .padding(10)
-                                }
-                            )
-                            .push(Rule::horizontal(10))
-                            .push(
-                                row![
-                                    Column::new()
-                                        .width(Length::FillPortion(1))
-                                        .push(self.view_log_section("Server Logs", &self.server_logs)),
-                                    Column::new()
-                                        .width(Length::FillPortion(1))
-                                        .push(self.view_log_section("Connection Logs", &self.connection_logs)),
-                                    Column::new()
-                                        .width(Length::FillPortion(1))
-                                        .push(self.view_log_section("Error Logs", &self.error_logs)),
-                                ].spacing(20)
-                            )
-                            .into()
-                    }
-                    View::Agents => self.view_agents(),
-                    View::Tasks => self.view_tasks(),
-                    View::Connections => self.view_connections(),
-                    View::Settings => self.view_settings(),
-                }
+                iced::widget::Button::new(iced::widget::Text::new("Overview"))
+                    .on_press(Message::ChangeView(View::Overview))
+                    .style(if self.current_view == View::Overview {
+                        iced::theme::Button::Primary
+                    } else {
+                        iced::theme::Button::Text
+                    })
+            )
+            .push(
+                iced::widget::Button::new(iced::widget::Text::new("Agents"))
+                    .on_press(Message::ChangeView(View::Agents))
+                    .style(if self.current_view == View::Agents {
+                        iced::theme::Button::Primary
+                    } else {
+                        iced::theme::Button::Text
+                    })
+            )
+            .push(
+                iced::widget::Button::new(iced::widget::Text::new("Tasks"))
+                    .on_press(Message::ChangeView(View::Tasks))
+                    .style(if self.current_view == View::Tasks {
+                        iced::theme::Button::Primary
+                    } else {
+                        iced::theme::Button::Text
+                    })
+            )
+            .push(
+                iced::widget::Button::new(iced::widget::Text::new("Connections"))
+                    .on_press(Message::ChangeView(View::Connections))
+                    .style(if self.current_view == View::Connections {
+                        iced::theme::Button::Primary
+                    } else {
+                        iced::theme::Button::Text
+                    })
+            )
+            .push(
+                iced::widget::Button::new(iced::widget::Text::new("Settings"))
+                    .on_press(Message::ChangeView(View::Settings))
+                    .style(if self.current_view == View::Settings {
+                        iced::theme::Button::Primary
+                    } else {
+                        iced::theme::Button::Text
+                    })
             );
 
-        container(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x()
-            .center_y()
+        iced::widget::container(sidebar)
+            .width(iced::Length::Fixed(200.0))
+            .height(iced::Length::Fill)
+            .style(iced::theme::Container::Custom(Box::new(SidebarStyle)))
             .into()
+    }
+
+    pub fn view(&self) -> iced::Element<Message> {
+        // Determine the main content based on the current view
+        let main_content: iced::Element<Message> = match self.current_view {
+            View::Overview => {
+                let _status_color = match self.server_status.as_str() {
+                    "Running" => iced::Color::from_rgb(0.0, 0.8, 0.0),
+                    "Stopped" => iced::Color::from_rgb(0.8, 0.0, 0.0),
+                    _ => iced::Color::from_rgb(0.8, 0.8, 0.0),
+                };
+                iced::widget::Column::new()
+                    .spacing(20)
+                    .push(
+                        iced::widget::Text::new(format!("Status: {}", self.server_status))
+                            .size(24)
+                    )
+                    .push(
+                        iced::widget::container(
+                            iced::widget::Column::new()
+                                .spacing(5)
+                                .push(iced::widget::Text::new(format!("Uptime: {:?}", self.uptime)))
+                                .push(iced::widget::Text::new(format!("Total Connections: {}", self.total_connections)))
+                                .push(iced::widget::Text::new(format!("Active Connections: {}", self.active_connections)))
+                                .push(iced::widget::Text::new(format!("Failed Connections: {}", self.failed_connections)))
+                        )
+                        .padding(10)
+                    )
+                    .into()
+            }
+            View::Agents => self.view_agents(),
+            View::Tasks => self.view_tasks(),
+            View::Connections => self.view_connections(),
+            View::Settings => self.view_settings(),
+        };
+
+        let content = iced::widget::Row::new()
+            .push(self.view_sidebar())
+            .push(
+                iced::widget::container(main_content)
+                    .width(iced::Length::Fill)
+                    .padding(20)
+            );
+
+        iced::widget::container(content)
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .into()
+    }
+}
+
+// Custom style for the sidebar container
+#[derive(Copy, Clone)]
+struct SidebarStyle;
+
+impl StyleSheet for SidebarStyle {
+    type Style = Theme;
+
+    fn appearance(&self, _style: &Self::Style) -> iced::widget::container::Appearance {
+        iced::widget::container::Appearance {
+            background: Some(iced::Background::Color(iced::Color::from_rgb(0.0, 0.5, 0.7))),
+            text_color: Some(iced::Color::WHITE),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<SidebarStyle> for iced::theme::Container {
+    fn from(_: SidebarStyle) -> Self {
+        iced::theme::Container::Custom(Box::new(SidebarStyle))
+    }
+}
+
+impl Default for SidebarStyle {
+    fn default() -> Self {
+        SidebarStyle
     }
 }
 
