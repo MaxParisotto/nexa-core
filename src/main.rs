@@ -1,84 +1,35 @@
-use nexa_core::{cli, error, gui};
-
 use clap::Parser;
-use cli::CliHandler;
-use error::NexaError;
+use log::{error, info};
 use std::sync::Arc;
-use log::{info, error};
-use env_logger::Env;
 
-fn main() -> Result<(), NexaError> {
-    init_logging();
+use nexa_core::{
+    cli::{Cli, Commands, CliHandler},
+    gui,
+};
 
-    let cli = cli::Cli::parse();
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
+    let cli = Cli::parse();
+    let handler = Arc::new(CliHandler::new());
 
     match cli.command {
-        Some(cli::Commands::Gui) => {
-            info!("Launching GUI...");
-            let handler = Arc::new(CliHandler::new());
-            
-            // Run GUI on the main thread
-            info!("Starting GUI event loop");
-            if let Err(e) = gui::run_gui(handler) {
-                error!("GUI error: {}", e);
-                return Err(NexaError::System(format!("Failed to start GUI: {}", e)));
+        Some(Commands::Start) => handler.start(None).await?,
+        Some(Commands::Stop) => handler.stop().await?,
+        Some(Commands::Status) => handler.status().await?,
+        Some(Commands::Gui) => {
+            if let Err(e) = gui::run(handler) {
+                error!("Failed to run GUI: {}", e);
             }
         }
-        _ => {
-            // Create a tokio runtime for non-GUI commands
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| NexaError::System(format!("Failed to create runtime: {}", e)))?;
-            
-            let handler = Arc::new(CliHandler::new());
-            let handler_clone = handler.clone();
-
-            // Setup signal handler for cleanup
-            ctrlc::set_handler(move || {
-                let handler = handler_clone.clone();
-                tokio::runtime::Runtime::new().unwrap().block_on(async move {
-                    if handler.is_server_running() {
-                        if let Err(e) = handler.stop().await {
-                            error!("Error stopping server during cleanup: {}", e);
-                        }
-                    }
-                    std::process::exit(0);
-                });
-            })?;
-
-            // Run the command in the runtime
-            rt.block_on(async {
-                match cli.command {
-                    Some(cli::Commands::Start) => handler.start(None).await,
-                    Some(cli::Commands::Stop) => handler.stop().await,
-                    Some(cli::Commands::Status) => handler.status().await,
-                    _ => {
-                        println!("No command specified. Use --help for usage information.");
-                        Ok(())
-                    }
-                }
-            })?;
+        None => {
+            info!("No command specified, starting GUI...");
+            if let Err(e) = gui::run(handler) {
+                error!("Failed to run GUI: {}", e);
+            }
         }
     }
 
     Ok(())
-}
-
-fn init_logging() {
-    let env = Env::default()
-        .filter_or("RUST_LOG", "info")
-        .write_style_or("RUST_LOG_STYLE", "always");
-
-    env_logger::Builder::from_env(env)
-        .format(|buf, record| {
-            use chrono::Local;
-            use std::io::Write;
-            writeln!(
-                buf,
-                "{} [{}] {}",
-                Local::now().format("%Y-%m-%d %H:%M:%S"),
-                record.level(),
-                record.args()
-            )
-        })
-        .init();
 } 

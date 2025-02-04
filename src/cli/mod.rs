@@ -16,7 +16,7 @@ use std::fs;
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use nix::libc;
-use crate::gui::TaskPriority;
+use crate::llm::system_helper::TaskPriority;
 use reqwest;
 use serde_json;
 use uuid;
@@ -139,6 +139,7 @@ pub enum AgentAction {
     CustomTask { task_type: String, parameters: serde_json::Value },
 }
 
+#[derive(Debug)]
 pub struct CliHandler {
     pid_file: PathBuf,
     server: Server,

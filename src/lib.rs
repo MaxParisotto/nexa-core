@@ -15,7 +15,7 @@ pub mod types;
 
 // Re-export commonly used types
 pub use models::agent::{Agent, Task, AgentStatus, TaskStatus};
-pub use gui::TaskPriority;
+pub use llm::system_helper::TaskPriority;
 
 // Error type
 pub use error::NexaError;
