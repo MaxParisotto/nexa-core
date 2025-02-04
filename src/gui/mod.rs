@@ -1821,8 +1821,17 @@ impl Application for NexaGui {
                     Command::none()
                 }
                 Message::LLMProviderChanged(provider) => {
-                    app.new_llm_provider = provider;
-                    Command::none()
+                    app.new_llm_provider = provider.clone();
+                    app.selected_provider = provider.clone();
+                    // Clear the selected model when provider changes
+                    app.selected_model = String::new();
+                    
+                    // Automatically try to load models for the selected provider
+                    let handler = app.handler.clone();
+                    let provider_clone = provider.clone();
+                    Command::perform(async move {
+                        handler.deref().list_models(&provider_clone).await
+                    }, move |result| Message::ModelsLoaded(provider, result))
                 }
                 Message::ConnectLLM(provider) => {
                     // Set status to Connecting before initiating connection
@@ -1853,6 +1862,12 @@ impl Application for NexaGui {
                                 server.available_models = models.clone();
                                 server.model_names = models.iter().map(|m| m.name.clone()).collect();
                                 server.status = LLMStatus::Connected;
+                                // If this is the selected provider, update the model list
+                                if provider == app.selected_provider {
+                                    app.selected_model = server.model_names.first()
+                                        .map(|m| m.clone())
+                                        .unwrap_or_default();
+                                }
                                 (format!("Loaded {} models for provider {}", models.len(), provider), true)
                             }
                             Err(e) => {
@@ -1873,10 +1888,9 @@ impl Application for NexaGui {
                     Command::none()
                 }
                 Message::SelectModel(provider, model) => {
+                    app.selected_model = model.clone();
                     if let Some(server) = app.llm_servers.iter_mut().find(|s| s.provider == provider) {
                         server.selected_model = Some(model.clone());
-                        // Update selected model when selection is successful
-                        app.selected_model = model.clone();
                     }
                     let handler = app.handler.clone();
                     let provider_clone = provider.clone();
