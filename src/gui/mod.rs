@@ -103,6 +103,7 @@ struct LogEntry {
     timestamp: chrono::DateTime<chrono::Utc>,
     message: String,
     level: LogLevel,
+    source: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -110,6 +111,7 @@ enum LogLevel {
     Info,
     Error,
     Debug,
+    Warning,
 }
 
 pub struct NexaApp {
@@ -173,6 +175,7 @@ impl NexaApp {
             timestamp: chrono::Utc::now(),
             message,
             level,
+            source: log_type.to_string(),
         };
 
         let logs = match log_type {
@@ -189,22 +192,39 @@ impl NexaApp {
     }
 
     fn view_log_section(&self, title: &str, logs: &VecDeque<LogEntry>) -> Element<Message> {
+        let header = row![
+            text(title).size(20).width(Length::Fill),
+            text(format!("{} entries", logs.len())).size(14).style(Color::from_rgb(0.5, 0.5, 0.5))
+        ].padding(5);
+
         let mut log_content = Column::new()
-            .spacing(5)
-            .push(text(title).size(20));
+            .spacing(8)
+            .push(header)
+            .push(Rule::horizontal(2));
 
         for entry in logs.iter() {
-            let color = match entry.level {
-                LogLevel::Info => Color::from_rgb(0.0, 0.8, 0.0),
-                LogLevel::Error => Color::from_rgb(0.8, 0.0, 0.0),
-                LogLevel::Debug => Color::from_rgb(0.5, 0.5, 0.5),
+            let (color, level_text) = match entry.level {
+                LogLevel::Info => (Color::from_rgb(0.0, 0.7, 0.0), "INFO"),
+                LogLevel::Error => (Color::from_rgb(0.8, 0.0, 0.0), "ERROR"),
+                LogLevel::Debug => (Color::from_rgb(0.5, 0.5, 0.5), "DEBUG"),
+                LogLevel::Warning => (Color::from_rgb(0.8, 0.6, 0.0), "WARN"),
             };
 
+            let log_row = row![
+                text(entry.timestamp.format("%H:%M:%S%.3f")).size(12).style(Color::from_rgb(0.4, 0.4, 0.4)).width(Length::Fixed(100.0)),
+                text(level_text).size(12).style(color).width(Length::Fixed(50.0)),
+                text(&entry.source).size(12).style(Color::from_rgb(0.3, 0.5, 0.7)).width(Length::Fixed(80.0)),
+                text(&entry.message).size(14).style(color)
+            ].spacing(10);
+
             log_content = log_content.push(
-                text(format!("[{}] {}", 
-                    entry.timestamp.format("%H:%M:%S"),
-                    entry.message
-                )).style(color).size(14)
+                container(log_row)
+                    .padding(5)
+                    .style(if matches!(entry.level, LogLevel::Error) {
+                        iced::theme::Container::Custom(Box::new(ErrorLogStyle))
+                    } else {
+                        iced::theme::Container::Transparent
+                    })
             );
         }
 
@@ -212,8 +232,9 @@ impl NexaApp {
             container(log_content)
                 .width(Length::Fill)
                 .padding(10)
+                .style(iced::theme::Container::Box)
         )
-        .height(Length::Fixed(200.0))
+        .height(Length::Fixed(300.0))
         .into()
     }
 
@@ -506,6 +527,29 @@ impl Default for SidebarStyle {
     }
 }
 
+// Add custom style for error log entries
+#[derive(Debug, Clone, Copy)]
+struct ErrorLogStyle;
+
+impl container::StyleSheet for ErrorLogStyle {
+    type Style = Theme;
+
+    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
+        container::Appearance {
+            background: Some(iced::Background::Color(Color::from_rgb(0.9, 0.8, 0.8))),
+            border_radius: 4.0.into(),
+            border_width: 0.0,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<ErrorLogStyle> for iced::theme::Container {
+    fn from(_: ErrorLogStyle) -> Self {
+        iced::theme::Container::Custom(Box::new(ErrorLogStyle))
+    }
+}
+
 #[derive(Default)]
 pub struct NexaGui {
     app: Option<NexaApp>,
@@ -542,8 +586,10 @@ impl Application for NexaGui {
                         return window::close();
                     }
                     app.uptime += Duration::from_secs(1);
-                    if app.server_status == "Running" {
-                        let handler = app.handler.clone();
+                    
+                    // Check server status and update state
+                    let handler = app.handler.clone();
+                    if app.server_status == "Running" || app.server_status == "Starting" {
                         Command::perform(async move {
                             let server = handler.get_server();
                             let state = format!("{:?}", server.get_state().await);
@@ -556,6 +602,19 @@ impl Application for NexaGui {
                     }
                 }
                 Message::UpdateState(state, active, metrics) => {
+                    // If we were in Starting state and got a valid state update, update the status
+                    if app.server_status == "Starting" {
+                        if state == "Running" {
+                            app.server_status = "Running".to_string();
+                            app.add_log("Server started successfully".to_string(), LogLevel::Info, "server");
+                            app.add_log(format!("Active connections: {}", active), LogLevel::Debug, "server");
+                        } else if state == "Error" || state == "Stopped" {
+                            app.server_status = "Error".to_string();
+                            app.add_log("Server failed to start".to_string(), LogLevel::Error, "error");
+                        }
+                    } else if active > 10 {
+                        app.add_log(format!("High number of connections: {}", active), LogLevel::Warning, "connection");
+                    }
                     app.server_status = state;
                     app.active_connections = active as u32;
                     app.total_connections = metrics.total_connections;
@@ -564,36 +623,37 @@ impl Application for NexaGui {
                         app.last_error = Some(error.clone());
                         app.add_log(error, LogLevel::Error, "error");
                     }
-                    app.add_log(
-                        format!("Active: {}, Total: {}, Failed: {}", 
-                            active, 
-                            metrics.total_connections,
-                            metrics.failed_connections
-                        ),
-                        LogLevel::Debug,
-                        "connection"
-                    );
                     Command::none()
                 }
                 Message::StartServer => {
-                    app.add_log("Starting server...".to_string(), LogLevel::Info, "server");
-                    let handler = app.handler.clone();
-                    Command::perform(async move {
-                        match handler.start(None).await {
-                            Ok(_) => (true, None),
-                            Err(e) => (false, Some(e.to_string())),
-                        }
-                    }, |(success, error)| Message::ServerStarted(success, error))
+                    if app.server_status != "Starting" {  // Only start if not already starting
+                        app.server_status = "Starting".to_string();
+                        app.add_log("Starting server...".to_string(), LogLevel::Info, "server");
+                        let handler = app.handler.clone();
+                        Command::perform(async move {
+                            match handler.start(None).await {
+                                Ok(_) => (true, None),
+                                Err(e) => (false, Some(e.to_string())),
+                            }
+                        }, |(success, error)| Message::ServerStarted(success, error))
+                    } else {
+                        Command::none()
+                    }
                 }
                 Message::StopServer => {
-                    app.add_log("Stopping server...".to_string(), LogLevel::Info, "server");
-                    let handler = app.handler.clone();
-                    Command::perform(async move {
-                        match handler.stop().await {
-                            Ok(_) => (true, None),
-                            Err(e) => (false, Some(e.to_string())),
-                        }
-                    }, |(success, error)| Message::ServerStopped(success, error))
+                    if app.server_status != "Stopping" {  // Only stop if not already stopping
+                        app.server_status = "Stopping".to_string();
+                        app.add_log("Stopping server...".to_string(), LogLevel::Info, "server");
+                        let handler = app.handler.clone();
+                        Command::perform(async move {
+                            match handler.stop().await {
+                                Ok(_) => (true, None),
+                                Err(e) => (false, Some(e.to_string())),
+                            }
+                        }, |(success, error)| Message::ServerStopped(success, error))
+                    } else {
+                        Command::none()
+                    }
                 }
                 Message::ServerStarted(success, error) => {
                     if success {
