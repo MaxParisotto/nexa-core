@@ -1,26 +1,27 @@
 use iced::{
-    widget::{
-        button, column, container, text, row,
-        text_input,
-    },
+    widget::{ button, container, text, row, column, text_input, Button, Container, Text, Row, Column, TextInput },
     Element, Length, Theme, Subscription,
-    executor, window, Application, Command,
-    theme, Alignment, Color,
+    executor, Alignment, Color, alignment,
+    advanced::command::Command,
+    advanced::program::Program,
 };
+
 use std::sync::Arc;
 use std::time::Duration;
+use std::marker::PhantomData;
 
-use crate::cli::{CliHandler, AgentStatus, AgentConfig, RetryPolicy};
-
+use crate::cli::{CliHandler, AgentStatus, AgentConfig, RetryPolicy, Agent};
 use super::types::{Message, NexaApp, View, AgentFormState};
-use super::components::{header, sidebar_container, error_container, section_container};
+use super::styles;
+use super::components::{header, error_container, section_container};
 use super::utils::format_duration;
 
+/// Main application struct
 pub struct NexaGui {
     app: Option<NexaApp>,
 }
 
-impl Application for NexaGui {
+impl Program for NexaGui {
     type Message = Message;
     type Theme = Theme;
     type Executor = executor::Default;
@@ -37,6 +38,46 @@ impl Application for NexaGui {
 
     fn subscription(&self) -> Subscription<Message> {
         iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)
+    }
+
+    fn view(&self) -> Element<Message> {
+        if let Some(app) = &self.app {
+            let content = match app.current_view {
+                View::Overview => view_overview(app),
+                View::Agents => view_agents(app),
+                View::Tasks => view_tasks(app),
+                View::Connections => view_connections(app),
+                View::Settings => view_settings(app),
+                View::LLMServers => view_llm_servers(app),
+            };
+
+            container(
+                Column::with_children(vec![
+                    view_sidebar(app),
+                    container(content)
+                        .width(Length::Fill)
+                        .padding(20)
+                        .style(styles::content_container())
+                        .into()
+                ])
+                .width(Length::Fill)
+                .height(Length::Fill)
+            )
+            .style(styles::main_container())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            container(
+                text("Initializing...")
+                    .size(24)
+                    .style(Color::from_rgb(0.7, 0.7, 0.7))
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(alignment::Vertical::Center)
+            .into()
+        }
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
@@ -91,7 +132,7 @@ impl Application for NexaGui {
                 }
                 Message::Exit => {
                     app.should_exit = true;
-                    window::close(window::Id::MAIN)
+                    Command::none()
                 }
                 Message::ChangeView(view) => {
                     app.current_view = view;
@@ -258,71 +299,84 @@ impl Application for NexaGui {
             Command::none()
         }
     }
-
-    fn view(&self) -> Element<Message> {
-        if let Some(app) = &self.app {
-            let content = match app.current_view {
-                View::Overview => view_overview(app),
-                View::Agents => view_agents(app),
-                View::Tasks => view_tasks(app),
-                View::Connections => view_connections(app),
-                View::Settings => view_settings(app),
-                View::LLMServers => view_llm_servers(app),
-            };
-
-            row![
-                sidebar_container(view_sidebar(app)),
-                container(content)
-                    .width(Length::Fill)
-                    .padding(20)
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-        } else {
-            text("Initializing...").into()
-        }
-    }
-
-    fn theme(&self) -> Theme {
-        Theme::Dark
-    }
 }
 
-fn view_sidebar(_app: &NexaApp) -> Element<Message> {
-    column![
-        text("Menu").size(28),
-        button(text("Overview"))
-            .on_press(Message::ChangeView(View::Overview))
-            .width(Length::Fill),
-        button(text("Agents"))
-            .on_press(Message::ChangeView(View::Agents))
-            .width(Length::Fill),
-        button(text("Tasks"))
-            .on_press(Message::ChangeView(View::Tasks))
-            .width(Length::Fill),
-        button(text("Connections"))
-            .on_press(Message::ChangeView(View::Connections))
-            .width(Length::Fill),
-        button(text("Settings"))
-            .on_press(Message::ChangeView(View::Settings))
-            .width(Length::Fill),
-        button(text("LLM Servers"))
-            .on_press(Message::ChangeView(View::LLMServers))
+fn view_sidebar(app: &NexaApp) -> iced::Element<Message> {
+    let menu_button = |label: &str, view: View| -> iced::Element<Message> {
+        button(
+            text(label)
+                .size(16)
+                .width(Length::Fill)
+        )
+        .width(Length::Fill)
+        .padding(10)
+        .style(if app.current_view == view {
+            styles::primary_button()
+        } else {
+            styles::secondary_button()
+        })
+        .on_press(Message::ChangeView(view))
+        .into()
+    };
+
+    let buttons: Vec<iced::Element<Message>> = vec![
+        menu_button("Overview", View::Overview),
+        menu_button("Agents", View::Agents),
+        menu_button("Tasks", View::Tasks),
+        menu_button("Connections", View::Connections),
+        menu_button("Settings", View::Settings),
+        menu_button("LLM Servers", View::LLMServers),
+    ];
+
+    container(
+        Column::with_children(vec![
+            container(
+                text("NEXA CORE")
+                    .size(24)
+                    .style(Color::from_rgb(0.9, 0.9, 0.9))
+            )
+            .padding(20)
             .width(Length::Fill)
-    ]
-    .spacing(20)
-    .padding(20)
+            .center_x()
+            .align_y(alignment::Vertical::Center)
+            .into(),
+            
+            Column::with_children(buttons)
+                .spacing(5)
+                .padding(10)
+                .into(),
+
+            container(
+                button(
+                    text("Exit")
+                        .size(16)
+                        .width(Length::Fill)
+                )
+                .width(Length::Fill)
+                .padding(10)
+                .style(styles::secondary_button())
+                .on_press(Message::Exit)
+            )
+            .padding(10)
+            .into()
+        ])
+        .height(Length::Fill)
+    )
+    .width(Length::Fixed(200.0))
+    .height(Length::Fill)
+    .style(styles::container_style(styles::SidebarContainer))
     .into()
 }
 
-fn view_overview(app: &NexaApp) -> Element<Message> {
+fn view_overview(app: &NexaApp) -> iced::Element<Message> {
     let status_button = if app.server_status == "Running" {
         button(text("Stop Server"))
             .on_press(Message::StopServer)
+            .into()
     } else {
         button(text("Start Server"))
             .on_press(Message::StartServer)
+            .into()
     };
 
     let error_logs = if !app.error_logs.is_empty() {
@@ -337,44 +391,47 @@ fn view_overview(app: &NexaApp) -> Element<Message> {
 
     let error_section: Element<Message> = if !app.error_logs.is_empty() {
         error_container(
-            column![
-                text("Error Logs").size(20),
+            Column::with_children(vec![
+                text("Error Logs").size(20).into(),
                 error_logs
-            ].spacing(10)
+            ]).spacing(10)
         ).into()
     } else {
         container(text("")).into()
     };
 
-    column![
-        header("Overview"),
+    Column::with_children(vec![
+        header("Overview").into(),
         section_container(
-            column![
+            Column::with_children(vec![
                 text(format!("Server Status: {}", app.server_status)).size(20),
                 text(format!("Uptime: {}", format_duration(app.uptime))).size(16),
                 text(format!("Active Connections: {}", app.active_connections)).size(16),
                 text(format!("Total Connections: {}", app.total_connections)).size(16),
                 text(format!("Failed Connections: {}", app.failed_connections)).size(16),
                 status_button
-            ].spacing(10)
+            ])
+            .spacing(10)
+            .into()
         ),
         section_container(
-            column![
+            Column::with_children(vec![
                 text("Server Logs").size(20),
                 column(
                     app.server_logs.iter()
                         .map(|log| text(log).into())
                         .collect::<Vec<Element<Message>>>()
                 ).spacing(5)
-            ].spacing(10)
+            ])
+            .spacing(10)
         ),
-        error_section
-    ]
+        error_section.into()
+    ])
     .spacing(20)
     .into()
 }
 
-fn view_agents(app: &NexaApp) -> Element<Message> {
+fn view_agents(app: &NexaApp) -> iced::Element<Message> {
     let status_colors = |status: &AgentStatus| {
         match status {
             AgentStatus::Active => Color::from_rgb(0.0, 0.8, 0.0),
@@ -388,37 +445,48 @@ fn view_agents(app: &NexaApp) -> Element<Message> {
 
     let form = if app.agent_form.show_form {
         section_container(
-            column![
-                row![
-                    text("Create New Agent").size(24),
+            Column::with_children(vec![
+                Row::with_children(vec![
+                    text("Create New Agent").size(24).into(),
                     button(text("×").size(24))
                         .on_press(Message::HideAgentForm)
-                        .style(theme::Button::Destructive)
-                ]
-                .spacing(20)
-                .align_items(Alignment::Center),
-                text_input("Agent Name", &app.agent_form.name)
-                    .on_input(Message::UpdateAgentName)
-                    .padding(10),
-                text_input("LLM Provider", &app.agent_form.llm_provider)
-                    .on_input(Message::UpdateAgentLLMProvider)
-                    .padding(10),
-                text_input("LLM Model", &app.agent_form.llm_model)
-                    .on_input(Message::UpdateAgentLLMModel)
-                    .padding(10),
-                text_input("Max Concurrent Tasks", &app.agent_form.max_concurrent_tasks)
-                    .on_input(Message::UpdateAgentMaxTasks)
-                    .padding(10),
-                text_input("Priority Threshold", &app.agent_form.priority_threshold)
-                    .on_input(Message::UpdateAgentPriority)
-                    .padding(10),
-                text_input("Timeout (seconds)", &app.agent_form.timeout_seconds)
-                    .on_input(Message::UpdateAgentTimeout)
-                    .padding(10),
+                        .style(Button::Destructive)
+                        .into()
+                ]).spacing(20).align_items(Alignment::Center),
+                { let mut name_state = TextInput::State::default();
+                  TextInput::new(&mut name_state, "Agent Name", |s| Message::UpdateAgentName(s))
+                      .value(&app.agent_form.name)
+                      .padding(10) 
+                },
+                { let mut provider_state = TextInput::State::default();
+                  TextInput::new(&mut provider_state, "LLM Provider", |s| Message::UpdateAgentLLMProvider(s))
+                      .value(&app.agent_form.llm_provider)
+                      .padding(10) 
+                },
+                { let mut model_state = TextInput::State::default();
+                  TextInput::new(&mut model_state, "LLM Model", |s| Message::UpdateAgentLLMModel(s))
+                      .value(&app.agent_form.llm_model)
+                      .padding(10) 
+                },
+                { let mut max_tasks_state = TextInput::State::default();
+                  TextInput::new(&mut max_tasks_state, "Max Concurrent Tasks", |s| Message::UpdateAgentMaxTasks(s))
+                      .value(&app.agent_form.max_concurrent_tasks)
+                      .padding(10) 
+                },
+                { let mut priority_state = TextInput::State::default();
+                  TextInput::new(&mut priority_state, "Priority Threshold", |s| Message::UpdateAgentPriority(s))
+                      .value(&app.agent_form.priority_threshold)
+                      .padding(10) 
+                },
+                { let mut timeout_state = TextInput::State::default();
+                  TextInput::new(&mut timeout_state, "Timeout (seconds)", |s| Message::UpdateAgentTimeout(s))
+                      .value(&app.agent_form.timeout_seconds)
+                      .padding(10) 
+                },
                 if !app.agent_form.validation_errors.is_empty() {
                     column(
                         app.agent_form.validation_errors.iter()
-                            .map(|error| text(error).style(theme::Text::Color(Color::from_rgb(0.8, 0.0, 0.0))))
+                            .map(|error| text(error).style(Color::from_rgb(0.8, 0.0, 0.0)))
                             .map(Element::from)
                             .collect::<Vec<Element<Message>>>()
                     ).spacing(5)
@@ -427,78 +495,80 @@ fn view_agents(app: &NexaApp) -> Element<Message> {
                 },
                 button(text("Create Agent"))
                     .on_press(Message::SubmitAgentForm)
-                    .style(theme::Button::Primary)
+                    .style(Button::Primary)
                     .width(Length::Fill)
-            ]
+            ])
             .spacing(15)
         )
     } else {
         container(
             button(text("+ Create New Agent"))
                 .on_press(Message::ShowAgentForm)
-                .style(theme::Button::Primary)
+                .style(Button::Primary)
         ).into()
     };
 
     let content: Element<Message> = if !app.agents.is_empty() {
-        column(
+        Column::with_children(
             app.agents.iter().map(|agent| {
                 section_container(
-                    column![
-                        row![
-                            column![
-                                text(&agent.name).size(18),
-                                text(&agent.id).size(12).style(Color::from_rgb(0.5, 0.5, 0.5))
-                            ],
-                            text(format!("{:?}", agent.status))
-                                .style(status_colors(&agent.status))
-                        ]
-                        .spacing(10)
-                        .align_items(Alignment::Center),
+                    Column::with_children(vec![
+                        Row::with_children(vec![
+                            Column::with_children(vec![
+                                text(&agent.name).size(18).into(),
+                                text(&agent.id).size(12).style(Color::from_rgb(0.5, 0.5, 0.5)).into()
+                            ]),
+                            Row::with_children(vec![
+                                Column::with_children(vec![
+                                    text(&agent.name).size(18).into(),
+                                    text(&agent.id).size(12).style(Color::from_rgb(0.5, 0.5, 0.5)).into()
+                                ]),
+                                text(format!("{:?}", agent.status))
+                                    .style(status_colors(&agent.status))
+                                    .into()
+                            ]).spacing(10).align_items(Alignment::Center)
+                        ]).spacing(10),
                         if !agent.capabilities.is_empty() {
-                            text(format!("Capabilities: {}", agent.capabilities.join(", ")))
-                                .size(14)
+                            text(format!("Capabilities: {}", agent.capabilities.join(", "))).size(14)
                         } else {
                             text("No capabilities").size(14)
                         },
-                        row![
-                            text(format!("Tasks completed: {}", agent.metrics.tasks_completed)),
-                            text(format!("Tasks failed: {}", agent.metrics.tasks_failed)),
-                            text(format!("Avg response: {:.2}ms", agent.metrics.average_response_time_ms))
-                        ]
-                        .spacing(20),
+                        Row::with_children(vec![
+                            text(format!("Tasks completed: {}", agent.metrics.tasks_completed)).into(),
+                            text(format!("Tasks failed: {}", agent.metrics.tasks_failed)).into(),
+                            text(format!("Avg response: {:.2}ms", agent.metrics.average_response_time_ms)).into()
+                        ]).spacing(20),
                         if let Some(error) = &agent.metrics.last_error {
-                            text(format!("Last error: {}", error))
-                                .style(Color::from_rgb(0.8, 0.0, 0.0))
+                            text(format!("Last error: {}", error)).style(Color::from_rgb(0.8, 0.0, 0.0))
                         } else {
                             text("")
                         },
-                        row![
+                        Row::with_children(vec![
                             button(text("Update Capabilities"))
                                 .on_press(Message::UpdateAgentCapabilities(
                                     agent.id.clone(),
                                     vec!["code_generation".to_string(), "code_review".to_string()]
-                                )),
+                                ))
+                                .into(),
                             if agent.parent_id.is_none() {
                                 button(text("Set as Child"))
                                     .on_press(Message::SetAgentHierarchy(
                                         "parent_id".to_string(),
                                         agent.id.clone()
                                     ))
+                                    .into()
                             } else {
                                 button(text("Remove Parent"))
                                     .on_press(Message::SetAgentHierarchy(
                                         agent.id.clone(),
                                         "".to_string()
                                     ))
+                                    .into()
                             }
-                        ]
-                        .spacing(10)
-                    ]
-                    .spacing(10)
+                        ]).spacing(10)
+                    ])
                 ).into()
-            })
-            .collect::<Vec<Element<Message>>>()
+            }).collect::<Vec<Element<Message>>>()
         ).spacing(10).into()
     } else {
         text("No agents found. Create one to get started.")
@@ -507,68 +577,68 @@ fn view_agents(app: &NexaApp) -> Element<Message> {
             .into()
     };
 
-    column![
-        header("Agents"),
+    Column::with_children(vec![
+        header("Agents").into(),
         section_container(
-            column![
+            Column::with_children(vec![
                 row![
                     text("Agents").size(20),
                     button(text("Refresh"))
                         .on_press(Message::RefreshAgents)
-                        .style(theme::Button::Secondary)
+                        .style(Button::Secondary)
                 ]
                 .spacing(20)
                 .align_items(Alignment::Center),
                 form,
                 content
-            ]
+            ])
             .spacing(20)
         )
-    ]
+    ])
     .spacing(20)
     .into()
 }
 
 fn view_tasks(_app: &NexaApp) -> Element<Message> {
-    column![
-        header("Tasks"),
+    Column::with_children(vec![
+        header("Tasks").into(),
         section_container(
             text("Task management interface coming soon...")
-        )
-    ]
+        ).into()
+    ])
     .spacing(20)
     .into()
 }
 
 fn view_connections(_app: &NexaApp) -> Element<Message> {
-    column![
-        header("Connections"),
+    Column::with_children(vec![
+        header("Connections").into(),
         section_container(
             text("Connection management interface coming soon...")
-        )
-    ]
+        ).into()
+    ])
     .spacing(20)
     .into()
 }
 
 fn view_settings(_app: &NexaApp) -> Element<Message> {
-    column![
-        header("Settings"),
+    Column::with_children(vec![
+        header("Settings").into(),
         section_container(
             text("Settings interface coming soon...")
-        )
-    ]
+        ).into()
+    ])
     .spacing(20)
     .into()
 }
 
 fn view_llm_servers(_app: &NexaApp) -> Element<Message> {
-    column![
-        header("LLM Servers"),
+    Column::with_children(vec![
+        header("LLM Servers").into(),
         section_container(
             text("LLM server management interface coming soon...")
-        )
-    ]
+        ).into()
+    ])
     .spacing(20)
     .into()
 } 

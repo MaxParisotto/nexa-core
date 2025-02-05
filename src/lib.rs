@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate iced;
+
 pub mod api;
 pub mod cli;
 pub mod error;
