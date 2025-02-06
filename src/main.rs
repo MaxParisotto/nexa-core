@@ -3,7 +3,6 @@ use log::{error, info};
 use std::sync::Arc;
 
 use nexa_core::cli::{Cli, Commands, CliHandler};
-use nexa_core::gui;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
