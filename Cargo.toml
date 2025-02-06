@@ -14,12 +14,12 @@ tokio = { version = "1.43.0", features = ["full"] }
 tokio-tungstenite = "0.21.0"
 tungstenite = "0.21.0"
 futures = "0.3.31"
-uuid = { version = "1.12.1", features = ["v4", "serde"] }
+uuid = { version = "1.12.1", features = ["v4", "serde", "fast-rng"] }
 once_cell = "1.19"
 log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5.27", features = ["derive"] }
-iced = { version = "0.12.1", features = ["tokio", "debug", "advanced"] }
+iced = { version = "0.13.1", features = ["tokio", "debug", "advanced", "async-std"] }
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.138"
 serde_yaml = "0.9"
@@ -33,7 +33,7 @@ sha2 = "0.10.8"
 libc = "0.2.153"
 hashring = "0.3.2"
 parking_lot = "0.12"
-dashmap = "5.5.3"
+dashmap = "6.1.0"
 tokio-util = { version = "0.7.10", features = ["codec"] }
 num_cpus = "1.16"
 sys-info = "0.9"
@@ -41,12 +41,14 @@ rand = { version = "0.8", features = ["small_rng"] }
 mdns-sd = "0.13.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+directories = "6.0.0"
+async-std = { version = "1.12", features = ["attributes"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-reqwest = { version = "0.11", default-features = false, features = ["native-tls", "json"] }
+reqwest = { version = "0.12.12", default-features = false, features = ["native-tls", "json"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-reqwest = { version = "0.11", default-features = false, features = ["native-tls-vendored", "json"] }
+reqwest = { version = "0.12.12", default-features = false, features = ["native-tls-vendored", "json"] }
 
 [dev-dependencies]
 tokio-test = "0.4.3"

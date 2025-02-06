@@ -5,23 +5,25 @@
 //! - Monitoring system status
 //! - Managing agents
 
+extern crate self as nexa_core;
 use clap::{Parser, Subcommand};
 use log::{error, info, debug};
-use crate::server::Server;
+use nexa_core::server::Server;
 use std::path::PathBuf;
-use crate::error::NexaError;
+use nexa_core::error::NexaError;
 use sysinfo;
 use std::process;
 use std::fs;
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use nix::libc;
-use crate::llm::system_helper::TaskPriority;
+use nexa_core::llm::system_helper::TaskPriority;
 use reqwest;
 use serde_json;
 use uuid;
 use chrono;
 use serde;
+use nexa_core::llm::LLMConnection;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -476,11 +478,11 @@ impl CliHandler {
         info!("Connecting to LLM server: {}", provider);
         match provider {
             "LMStudio" => {
-                super::llm::LLMConnection::connect("LMStudio", "system".to_string()).await
+                LLMConnection::connect("LMStudio", "system".to_string()).await
                     .map_err(|e| e.to_string())
             },
             "Ollama" => {
-                super::llm::LLMConnection::connect("Ollama", "system".to_string()).await
+                LLMConnection::connect("Ollama", "system".to_string()).await
                     .map_err(|e| e.to_string())
             },
             _ => Err(format!("Unsupported LLM provider: {}", provider))
