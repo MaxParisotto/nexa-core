@@ -3,7 +3,7 @@ use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
     button, column, container, row, scrollable, text,
 };  
-use iced::{Center, Color, Element, Fill, Size, Subscription};
+use iced::{Color, Element, Fill, Size, Subscription};
 
 pub fn main() -> iced::Result {
     iced::application("Pane Grid - Iced", Example::update, Example::view)
@@ -15,6 +15,7 @@ struct Example {
     panes: pane_grid::State<Pane>,
     panes_created: usize,
     focus: Option<pane_grid::Pane>,
+    cli_handler: std::sync::Arc<crate::cli::CliHandler>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +31,9 @@ enum Message {
     Restore,
     Close(pane_grid::Pane),
     CloseFocused,
+    CliStart,
+    CliStop,
+    CliStatus,
 }
 
 impl Example {
@@ -40,6 +44,7 @@ impl Example {
             panes,
             panes_created: 1,
             focus: None,
+            cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
         }
     }
 
@@ -115,6 +120,30 @@ impl Example {
                         }
                     }
                 }
+            }
+            Message::CliStart => {
+                let handler = self.cli_handler.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handler.start(None).await {
+                        eprintln!("Failed to start server: {:?}", e);
+                    }
+                });
+            }
+            Message::CliStop => {
+                let handler = self.cli_handler.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handler.stop().await {
+                        eprintln!("Failed to stop server: {:?}", e);
+                    }
+                });
+            }
+            Message::CliStatus => {
+                let handler = self.cli_handler.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handler.status().await {
+                        eprintln!("Failed to get status: {:?}", e);
+                    }
+                });
             }
         }
     }
@@ -196,7 +225,34 @@ impl Example {
         .on_drag(Message::Dragged)
         .on_resize(10, Message::Resized);
 
-        container(pane_grid).padding(10).into()
+        let cli_panel = self.view_cli_panel();
+
+        let content = column![
+            container(pane_grid).padding(10),
+            container(cli_panel).padding(10)
+        ]
+        .spacing(20);
+
+        container(content).into()
+    }
+
+    fn view_cli_panel<'a>(&self) -> Element<'a, Message> {
+        let start_btn = button(text("Start Server").size(16))
+            .padding(8)
+            .on_press(Message::CliStart);
+        let stop_btn = button(text("Stop Server").size(16))
+            .padding(8)
+            .on_press(Message::CliStop);
+        let status_btn = button(text("Server Status").size(16))
+            .padding(8)
+            .on_press(Message::CliStatus);
+        let panel = column![start_btn, stop_btn, status_btn]
+            .spacing(10)
+            .align_x(iced::alignment::Horizontal::Center);
+        container(panel)
+            .padding(10)
+            .center_x(Fill)
+            .into()
     }
 }
 
@@ -261,37 +317,48 @@ fn view_content<'a>(
     is_pinned: bool,
     size: Size,
 ) -> Element<'a, Message> {
-    let button = |label, message| {
-        button(text(label).width(Fill).align_x(Center).size(16))
+    // Helper to create a consistently styled button
+    let button_builder = |label, message| {
+        button(text(label).size(16))
             .width(Fill)
-            .padding(8)
+            .padding(12) // Increased padding for larger click area
             .on_press(message)
     };
 
+    // Control buttons for splitting and (optionally) closing the pane
     let controls = column![
-        button(
+        button_builder(
             "Split horizontally",
             Message::Split(pane_grid::Axis::Horizontal, pane),
         ),
-        button(
+        button_builder(
             "Split vertically",
             Message::Split(pane_grid::Axis::Vertical, pane),
         )
     ]
     .push_maybe(if total_panes > 1 && !is_pinned {
-        Some(button("Close", Message::Close(pane)).style(button::danger))
+        Some(button_builder("Close", Message::Close(pane)).style(button::danger))
     } else {
         None
     })
-    .spacing(5)
-    .max_width(160);
+    .spacing(10)
+    .max_width(180);
 
-    let content =
-        column![text!("{}x{}", size.width, size.height).size(24), controls,]
-            .spacing(10)
-            .align_x(Center);
+    // Pane content that shows the current size and the controls, with increased spacing and padding
+    let content = column![
+        text(format!("{} x {}", size.width, size.height))
+            .size(28),
+        controls
+    ]
+    .spacing(15)
+    .align_x(iced::alignment::Horizontal::Center)
+    .padding(15);
 
-    container(scrollable(content)).center_y(Fill).padding(5).into()
+    // Wrap the content in a scrollable container with extra overall padding for visual breathing room
+    container(scrollable(content))
+        .center_y(Fill)
+        .padding(20)
+        .into()
 }
 
 fn view_controls<'a>(
