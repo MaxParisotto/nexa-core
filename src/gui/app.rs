@@ -2,7 +2,7 @@ use iced::keyboard;
 use log::debug;
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
-    button, column, container, row, scrollable, text, Text,
+    button, column, container, row, scrollable, text, Text, Row,
 };  
 use iced::{Color, Element, Fill, Length, Size, Subscription, Theme};
 use crate::models::agent::{Agent, AgentStatus};
@@ -16,6 +16,8 @@ pub fn main() -> iced::Result {
     let example = Example::new().0;
     iced::application(example.title(), Example::update, Example::view)
         .subscription(Example::subscription)
+        .window_size(Size::new(1920.0, 1080.0))
+        .theme(|_| iced::Theme::Light)
         .run()
 }
 
@@ -30,6 +32,7 @@ struct Example {
     config_state: AgentConfigState,
     search_query: String,
     sort_order: SortOrder,
+    dock_items: Vec<DockItem>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +72,25 @@ impl Example {
     fn new() -> (Self, Task<Message>) {
         let (panes, _) = pane_grid::State::new(Pane::new(0));
 
+        // Define default dock items
+        let dock_items = vec![
+            DockItem {
+                name: "Agents".to_string(),
+                icon: "👥",
+                action: Message::ViewAgentDetails(String::new()),
+            },
+            DockItem {
+                name: "Settings".to_string(),
+                icon: "⚙️",
+                action: Message::CliStatus,
+            },
+            DockItem {
+                name: "Logs".to_string(),
+                icon: "📝",
+                action: Message::ClearLogs,
+            },
+        ];
+
         (
             Example {
                 panes,
@@ -81,6 +103,7 @@ impl Example {
                 config_state: AgentConfigState::default(),
                 search_query: String::new(),
                 sort_order: SortOrder::NameAsc,
+                dock_items,
             },
             Task::none(),
         )
@@ -401,102 +424,45 @@ impl Example {
     }
 
     fn view(&self) -> Element<Message> {
-        let left_panel = self.view_agent_panel();
-        let right_panel = if self.selected_agent.is_some() {
-            self.view_agent_details()
-        } else {
-            PaneGrid::new(&self.panes, |id, pane, is_maximized| {
-                let is_focused = self.focus == Some(id);
-
-                let pin_button = button(
-                    text(if pane.is_pinned { "Unpin" } else { "Pin" }).size(14),
-                )
-                .on_press(Message::TogglePin(id))
-                .padding(3);
-
-                let title = row![
-                    pin_button,
-                    "Pane",
-                    text(pane.id.to_string()).color(if is_focused {
-                        PANE_ID_COLOR_FOCUSED
-                    } else {
-                        PANE_ID_COLOR_UNFOCUSED
-                    }),
-                ]
-                .spacing(5);
-
-                let title_bar = pane_grid::TitleBar::new(title)
-                    .controls(pane_grid::Controls::dynamic(
-                        view_controls(
-                            id,
-                            self.panes.len(),
-                            pane.is_pinned,
-                            is_maximized,
-                        ),
-                        button(text("X").size(14))
-                            .style(button::danger)
-                            .padding(3)
-                            .on_press_maybe(
-                                if self.panes.len() > 1 && !pane.is_pinned {
-                                    Some(Message::Close(id))
-                                } else {
-                                    None
-                                },
-                            ),
-                    ))
+        let dock_buttons = Row::with_children(
+            self.dock_items.iter().map(|item| {
+                button(
+                    container(
+                        column![
+                            Text::new(item.icon).size(32),
+                            Text::new(&item.name).size(12),
+                        ]
+                        .spacing(5)
+                    )
                     .padding(10)
-                    .style(if is_focused {
-                        style::title_bar_focused
-                    } else {
-                        style::title_bar_active
-                    });
-
-                pane_grid::Content::new(responsive(move |size| {
-                    view_content(id, self.panes.len(), pane.is_pinned, size)
-                }))
-                .title_bar(title_bar)
-                .style(if is_focused {
-                    style::pane_focused
-                } else {
-                    style::pane_active
-                })
-            })
-            .width(Fill)
-            .height(Fill)
-            .spacing(10)
-            .on_click(Message::Clicked)
-            .on_drag(Message::Dragged)
-            .on_resize(10, Message::Resized)
-            .into()
-        };
+                    .style(style::dock_item)
+                )
+                .on_press(item.action.clone())
+                .style(button::secondary)
+                .into()
+            }).collect::<Vec<Element<_>>>()
+        ).spacing(15);
 
         let content = column![
             row![
-                container(left_panel).width(Length::FillPortion(1)),
-                container(right_panel).width(Length::FillPortion(2)),
+                container(self.view_agent_panel()).width(Length::FillPortion(1)),
+                container(
+                    if self.selected_agent.is_some() {
+                        self.view_agent_details()
+                    } else {
+                        self.view_pane_grid()
+                    }
+                ).width(Length::FillPortion(2)),
             ].spacing(20),
-            // Add status bar
-            container(
-                row![
-                    Text::new(format!("Agents: {}", self.agents.len())).size(14),
-                    Text::new(" | ").size(14),
-                    Text::new(format!("Active: {}", 
-                        self.agents.iter().filter(|a| matches!(a.status, AgentStatus::Active)).count()
-                    )).size(14),
-                    Text::new(" | ").size(14),
-                    Text::new(format!("Logs: {}", self.logs.len())).size(14),
-                ]
-                .spacing(10)
-            )
-            .padding(10)
-            .style(|theme: &Theme| container::Style {
-                background: Some(theme.extended_palette().background.base.color.into()),
-                ..Default::default()
-            }),
+            // Add dock
+            container(dock_buttons)
+                .padding(10)
+                .style(style::dock),
         ];
 
         container(content)
             .padding(10)
+            .style(style::main_container)
             .into()
     }
 
@@ -520,6 +486,28 @@ impl Example {
                 let now = std::time::Instant::now();
                 Message::ShowLogs(format!("System check at: {:?}", now))
             })
+    }
+
+    fn view_pane_grid(&self) -> Element<Message> {
+        let pane_grid = PaneGrid::new(
+            &self.panes,
+            |_id, pane, _is_maximized| {
+                let title = format!("Pane {}", pane.id);
+                let content: Element<_> = text(title).into();
+                pane_grid::Content::new(content)
+            }
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .spacing(10)
+        .on_drag(Message::Dragged)
+        .on_resize(10, Message::Resized);
+
+        container(pane_grid)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(10)
+            .into()
     }
 }
 
@@ -865,17 +853,6 @@ impl Default for Example {
     }
 }
 
-const PANE_ID_COLOR_UNFOCUSED: Color = Color::from_rgb(
-    0xFF as f32 / 255.0,
-    0xC7 as f32 / 255.0,
-    0xC7 as f32 / 255.0,
-);
-const PANE_ID_COLOR_FOCUSED: Color = Color::from_rgb(
-    0xFF as f32 / 255.0,
-    0x47 as f32 / 255.0,
-    0x47 as f32 / 255.0,
-);
-
 fn handle_hotkey(key: keyboard::Key) -> Option<Message> {
     use keyboard::key::{self, Key};
     use pane_grid::{Axis, Direction};
@@ -914,156 +891,46 @@ impl Pane {
     }
 }
 
-fn view_content<'a>(
-    pane: pane_grid::Pane,
-    total_panes: usize,
-    is_pinned: bool,
-    size: Size,
-) -> Element<'a, Message> {
-    // Helper to create a consistently styled button
-    let button_builder = |label, message| {
-        button(text(label).size(16))
-            .width(Fill)
-            .padding(12) // Increased padding for larger click area
-            .on_press(message)
-    };
-
-    // Control buttons for splitting and (optionally) closing the pane
-    let controls = column![
-        button_builder(
-            "Split horizontally",
-            Message::Split(pane_grid::Axis::Horizontal, pane),
-        ),
-        button_builder(
-            "Split vertically",
-            Message::Split(pane_grid::Axis::Vertical, pane),
-        )
-    ]
-    .push_maybe(if total_panes > 1 && !is_pinned {
-        Some(button_builder("Close", Message::Close(pane)).style(button::danger))
-    } else {
-        None
-    })
-    .spacing(10)
-    .max_width(180);
-
-    // Pane content that shows the current size and the controls, with increased spacing and padding
-    let content = column![
-        text(format!("{} x {}", size.width, size.height))
-            .size(28),
-        controls
-    ]
-    .spacing(15)
-    .align_x(iced::alignment::Horizontal::Center)
-    .padding(15);
-
-    // Wrap the content in a scrollable container with extra overall padding for visual breathing room
-    container(scrollable(content))
-        .center_y(Fill)
-        .padding(20)
-        .into()
-}
-
-fn view_controls<'a>(
-    pane: pane_grid::Pane,
-    total_panes: usize,
-    is_pinned: bool,
-    is_maximized: bool,
-) -> Element<'a, Message> {
-    let row = row![].spacing(5).push_maybe(if total_panes > 1 {
-        let (content, message) = if is_maximized {
-            ("Restore", Message::Restore)
-        } else {
-            ("Maximize", Message::Maximize(pane))
-        };
-
-        Some(
-            button(text(content).size(14))
-                .style(button::secondary)
-                .padding(3)
-                .on_press(message),
-        )
-    } else {
-        None
-    });
-
-    let close = button(text("Close").size(14))
-        .style(button::danger)
-        .padding(3)
-        .on_press_maybe(if total_panes > 1 && !is_pinned {
-            Some(Message::Close(pane))
-        } else {
-            None
-        });
-
-    row.push(close).into()
-}
-
-fn responsive<'a, Message>(
-    f: impl Fn(Size) -> Element<'a, Message> + 'a,
-) -> Element<'a, Message> 
-where
-    Message: 'a,
-{
-    let content = f(Size::new(0.0, 0.0));
-    container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
-
 mod style {
     use iced::widget::container;
-    use iced::{Border, Theme};
+    use iced::{Border, Theme, Color};
 
-    pub fn title_bar_active(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
-
+    pub fn dock_item(_: &Theme) -> container::Style {
         container::Style {
-            text_color: Some(palette.background.strong.text),
-            background: Some(palette.background.strong.color.into()),
-            ..Default::default()
-        }
-    }
-
-    pub fn title_bar_focused(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
-
-        container::Style {
-            text_color: Some(palette.primary.strong.text),
-            background: Some(palette.primary.strong.color.into()),
-            ..Default::default()
-        }
-    }
-
-    pub fn pane_active(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
-
-        container::Style {
-            background: Some(palette.background.weak.color.into()),
+            background: Some(Color::from_rgb(1.0, 1.0, 1.0).into()),
             border: Border {
-                width: 2.0,
-                color: palette.background.strong.color,
-                ..Border::default()
+                width: 1.0,
+                color: Color::from_rgb(0.8, 0.8, 0.8),
+                radius: 8.0.into(),
             },
             ..Default::default()
         }
     }
 
-    pub fn pane_focused(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
-
+    pub fn dock(_: &Theme) -> container::Style {
         container::Style {
-            background: Some(palette.background.weak.color.into()),
+            background: Some(Color::from_rgb(0.9, 0.9, 0.9).into()),
             border: Border {
-                width: 2.0,
-                color: palette.primary.strong.color,
-                ..Border::default()
+                width: 1.0,
+                color: Color::from_rgb(0.8, 0.8, 0.8),
+                radius: 16.0.into(),
             },
             ..Default::default()
         }
     }
-} // end of style mod
+
+    pub fn main_container(_: &Theme) -> container::Style {
+        container::Style {
+            background: Some(Color::from_rgb(0.98, 0.98, 0.98).into()),
+            border: Border {
+                width: 1.0,
+                color: Color::from_rgb(0.9, 0.9, 0.9),
+                radius: 10.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SortOrder {
@@ -1073,4 +940,12 @@ enum SortOrder {
     StatusDesc,
     LastActiveAsc,
     LastActiveDesc,
+}
+
+// Add dock item struct
+#[derive(Debug, Clone)]
+struct DockItem {
+    name: String,
+    icon: &'static str,
+    action: Message,
 }
