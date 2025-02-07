@@ -1033,5 +1033,31 @@ impl CliHandler {
             Err(format!("Agent {} not found", id))
         }
     }
+
+    pub async fn stop_agent(&self, agent_id: &str) -> Result<(), String> {
+        let agent = self.get_agent(agent_id).await?;
+        
+        // Update agent status to Offline
+        let mut updated_agent = agent.clone();
+        updated_agent.status = AgentStatus::Offline;
+        
+        // Save the updated agent state
+        self.save_agent(&updated_agent).await?;
+        
+        // Notify any connected clients/systems
+        if let Some(parent_id) = &agent.parent_id {
+            if let Ok(mut parent) = self.get_agent(parent_id).await {
+                parent.children.retain(|id| id != agent_id);
+                self.save_agent(&parent).await?;
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub async fn get_agent_config(&self, agent_id: &str) -> Result<AgentConfig, String> {
+        let agent = self.get_agent(agent_id).await?;
+        Ok(agent.config)
+    }
 }
 

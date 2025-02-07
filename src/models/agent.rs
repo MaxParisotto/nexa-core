@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Ord, PartialOrd)]
 pub enum AgentStatus {
     Idle,
     Active,
@@ -39,4 +39,20 @@ pub struct Task {
     pub deadline: Option<DateTime<Utc>>,
     pub priority: i32,
     pub estimated_duration: i64,
+}
+
+impl Agent {
+    pub fn from_cli_agent(cli_agent: crate::cli::Agent) -> Self {
+        Self {
+            id: cli_agent.id,
+            name: cli_agent.name,
+            capabilities: cli_agent.capabilities,
+            status: match cli_agent.status {
+                crate::cli::AgentStatus::Active | crate::cli::AgentStatus::Busy => AgentStatus::Active,
+                _ => AgentStatus::Idle,
+            },
+            current_task: None, // Could be derived from workflows if needed
+            last_heartbeat: cli_agent.last_active,
+        }
+    }
 } 
