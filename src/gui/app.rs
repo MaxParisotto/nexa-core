@@ -545,10 +545,7 @@ impl Example {
     fn view_agent_panel(&self) -> Element<Message> {
         let header = Text::new("AI Agents Management")
             .size(24)
-            .style(move |_: &Theme| iced::widget::text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5)),
-                ..Default::default()
-            });
+            .style(style::header_text);
 
         // Add search input
         let search_bar = container(
@@ -701,42 +698,41 @@ impl Example {
             if let Some(agent) = self.agents.iter().find(|a| &a.id == agent_id) {
                 let header = Text::new(format!("Agent Details: {}", agent.name))
                     .size(24)
-                    .style(move |_: &Theme| iced::widget::text::Style {
-                        color: Some(Color::from_rgb(0.5, 0.5, 0.5)),
-                        ..Default::default()
-                    });
+                    .style(style::header_text);
 
-                let details = column![
-                    row![
-                        Text::new("Status: ").size(16),
-                        Text::new(format!("{:?}", agent.status)).size(16)
-                    ],
-                    row![
-                        Text::new("ID: ").size(16),
-                        Text::new(&agent.id).size(16)
-                    ],
-                    row![
-                        Text::new("Capabilities: ").size(16),
-                        Text::new(agent.capabilities.join(", ")).size(16)
-                    ],
-                    row![
-                        Text::new("Last Heartbeat: ").size(16),
-                        Text::new(agent.last_heartbeat.to_string()).size(16)
-                    ],
-                    if let Some(task) = &agent.current_task {
+                let details = container(
+                    column![
                         row![
-                            Text::new("Current Task: ").size(16),
-                            Text::new(task).size(16)
-                        ]
-                    } else {
+                            Text::new("Status: ").size(16),
+                            Text::new(format!("{:?}", agent.status)).size(16)
+                        ],
                         row![
-                            Text::new("Current Task: ").size(16),
-                            Text::new("None").size(16)
-                        ]
-                    },
-                ]
-                .spacing(10)
-                .padding(10);
+                            Text::new("ID: ").size(16),
+                            Text::new(&agent.id).size(16)
+                        ],
+                        row![
+                            Text::new("Capabilities: ").size(16),
+                            Text::new(agent.capabilities.join(", ")).size(16)
+                        ],
+                        row![
+                            Text::new("Last Heartbeat: ").size(16),
+                            Text::new(agent.last_heartbeat.to_string()).size(16)
+                        ],
+                        if let Some(task) = &agent.current_task {
+                            row![
+                                Text::new("Current Task: ").size(16),
+                                Text::new(task).size(16)
+                            ]
+                        } else {
+                            row![
+                                Text::new("Current Task: ").size(16),
+                                Text::new("None").size(16)
+                            ]
+                        },
+                    ]
+                    .spacing(10)
+                    .padding(10)
+                ).style(style::panel_content);
 
                 let config_form = column![
                     Text::new("Agent Configuration").size(16),
@@ -804,7 +800,8 @@ impl Example {
                             )
                         ).height(Length::Fixed(200.0))
                     ]
-                ).padding(10);
+                ).padding(10)
+                .style(style::panel_content);
 
                 container(
                     column![
@@ -824,10 +821,7 @@ impl Example {
                 container(
                     Text::new("Agent not found")
                         .size(24)
-                        .style(move |_: &Theme| iced::widget::text::Style {
-                            color: Some(Color::from_rgb(0.8, 0.0, 0.0)),
-                            ..Default::default()
-                        })
+                        .style(style::header_text)
                 )
                 .padding(20)
                 .into()
@@ -836,10 +830,7 @@ impl Example {
             container(
                 Text::new("Select an agent to view details")
                     .size(24)
-                    .style(move |_: &Theme| iced::widget::text::Style {
-                        color: Some(Color::from_rgb(0.5, 0.5, 0.5)),
-                        ..Default::default()
-                    })
+                    .style(style::header_text)
             )
             .padding(20)
             .into()
@@ -893,39 +884,98 @@ impl Pane {
 
 mod style {
     use iced::widget::container;
-    use iced::{Border, Theme, Color};
+    use iced::{Border, Theme, Color, Shadow};
 
-    pub fn dock_item(_: &Theme) -> container::Style {
+    // Helper function for consistent colors
+    fn get_theme_colors(_theme: &Theme) -> (Color, Color, Color, Color) {
+        (
+            Color::from_rgb(0.98, 0.98, 0.98), // Background
+            Color::from_rgb(0.95, 0.95, 0.95), // Secondary Background
+            Color::from_rgb(0.85, 0.85, 0.85), // Border
+            Color::from_rgb(0.5, 0.5, 0.5),    // Text
+        )
+    }
+
+    pub fn dock_item(theme: &Theme) -> container::Style {
+        let (_, _, border_color, _) = get_theme_colors(theme);
+        
         container::Style {
             background: Some(Color::from_rgb(1.0, 1.0, 1.0).into()),
             border: Border {
                 width: 1.0,
-                color: Color::from_rgb(0.8, 0.8, 0.8),
-                radius: 8.0.into(),
+                color: border_color,
+                radius: (8.0).into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 5.0,
             },
             ..Default::default()
         }
     }
 
-    pub fn dock(_: &Theme) -> container::Style {
+    pub fn dock(theme: &Theme) -> container::Style {
+        let (_, secondary_bg, border_color, _) = get_theme_colors(theme);
+        
         container::Style {
-            background: Some(Color::from_rgb(0.9, 0.9, 0.9).into()),
+            background: Some(secondary_bg.into()),
             border: Border {
                 width: 1.0,
-                color: Color::from_rgb(0.8, 0.8, 0.8),
-                radius: 16.0.into(),
+                color: border_color,
+                radius: (16.0).into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.08),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 8.0,
             },
             ..Default::default()
         }
     }
 
-    pub fn main_container(_: &Theme) -> container::Style {
+    pub fn main_container(theme: &Theme) -> container::Style {
+        let (bg_color, _, border_color, _) = get_theme_colors(theme);
+        
         container::Style {
-            background: Some(Color::from_rgb(0.98, 0.98, 0.98).into()),
+            background: Some(bg_color.into()),
             border: Border {
                 width: 1.0,
-                color: Color::from_rgb(0.9, 0.9, 0.9),
-                radius: 10.0.into(),
+                color: border_color,
+                radius: (10.0).into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.05),
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 10.0,
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn header_text(theme: &Theme) -> iced::widget::text::Style {
+        let (_, _, _, text_color) = get_theme_colors(theme);
+        
+        iced::widget::text::Style {
+            color: Some(text_color),
+            ..Default::default()
+        }
+    }
+
+    pub fn panel_content(theme: &Theme) -> container::Style {
+        let (bg_color, _, border_color, _) = get_theme_colors(theme);
+        
+        container::Style {
+            background: Some(bg_color.into()),
+            border: Border {
+                width: 1.0,
+                color: border_color,
+                radius: (8.0).into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.03),
+                offset: iced::Vector::new(0.0, 1.0),
+                blur_radius: 3.0,
             },
             ..Default::default()
         }
