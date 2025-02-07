@@ -1,9 +1,11 @@
 use iced::keyboard;
+use log::debug;
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
-    button, column, container, row, scrollable, text,
+    button, column, container, row, scrollable, text, Text,
 };  
-use iced::{Color, Element, Fill, Size, Subscription};
+use iced::{Color, Element, Fill, Length, Size, Subscription, Theme};
+use crate::models::agent::{Agent, AgentStatus};
 
 pub fn main() -> iced::Result {
     iced::application("Pane Grid - Iced", Example::update, Example::view)
@@ -16,9 +18,13 @@ struct Example {
     panes_created: usize,
     focus: Option<pane_grid::Pane>,
     cli_handler: std::sync::Arc<crate::cli::CliHandler>,
+    agents: Vec<Agent>,
+    selected_agent: Option<String>,
+    logs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum Message {
     Split(pane_grid::Axis, pane_grid::Pane),
     SplitFocused(pane_grid::Axis),
@@ -34,6 +40,16 @@ enum Message {
     CliStart,
     CliStop,
     CliStatus,
+    RefreshAgents,
+    StartAgent(String),
+    StopAgent(String),
+    ViewAgentDetails(String),
+    ConnectLLM(String),
+    DisconnectLLM(String),
+    AgentsUpdated(Vec<Agent>),
+    UpdateAgentConfig(String, crate::cli::AgentConfig),
+    ShowLogs(String),
+    ClearLogs,
 }
 
 impl Example {
@@ -45,6 +61,9 @@ impl Example {
             panes_created: 1,
             focus: None,
             cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
+            agents: Vec::new(),
+            selected_agent: None,
+            logs: Vec::new(),
         }
     }
 
@@ -145,6 +164,54 @@ impl Example {
                     }
                 });
             }
+            Message::RefreshAgents => {
+                let handler = self.cli_handler.clone();
+                tokio::spawn(async move {
+                    if let Ok(agents) = handler.list_agents(None).await {
+                        debug!("Found {} agents", agents.len());
+                    }
+                });
+            }
+            Message::StartAgent(id) => {
+                let handler = self.cli_handler.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handler.create_agent(
+                        format!("Agent {}", id),
+                        crate::cli::AgentConfig::default()
+                    ).await {
+                        eprintln!("Failed to start agent: {}", e);
+                    }
+                });
+            }
+            Message::StopAgent(id) => {
+                println!("Stopping agent {}", id);
+            }
+            Message::ViewAgentDetails(id) => {
+                self.selected_agent = Some(id);
+            }
+            Message::ConnectLLM(_id) => {
+                // Implementation for connecting to an LLM
+            }
+            Message::DisconnectLLM(_id) => {
+                // Implementation for disconnecting from an LLM
+            }
+            Message::AgentsUpdated(new_agents) => {
+                self.agents = new_agents;
+            }
+            Message::UpdateAgentConfig(id, config) => {
+                let handler = self.cli_handler.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handler.update_agent_config(id, config).await {
+                        eprintln!("Failed to update agent config: {}", e);
+                    }
+                });
+            }
+            Message::ShowLogs(_id) => {
+                // Implementation for showing logs for a specific agent
+            }
+            Message::ClearLogs => {
+                self.logs.clear();
+            }
         }
     }
 
@@ -159,11 +226,9 @@ impl Example {
     }
 
     fn view(&self) -> Element<Message> {
-        let focus = self.focus;
-        let total_panes = self.panes.len();
-
-        let pane_grid = PaneGrid::new(&self.panes, |id, pane, is_maximized| {
-            let is_focused = focus == Some(id);
+        let left_panel = self.view_agent_panel();
+        let right_panel = PaneGrid::new(&self.panes, |id, pane, is_maximized| {
+            let is_focused = self.focus == Some(id);
 
             let pin_button = button(
                 text(if pane.is_pinned { "Unpin" } else { "Pin" }).size(14),
@@ -186,7 +251,7 @@ impl Example {
                 .controls(pane_grid::Controls::dynamic(
                     view_controls(
                         id,
-                        total_panes,
+                        self.panes.len(),
                         pane.is_pinned,
                         is_maximized,
                     ),
@@ -194,7 +259,7 @@ impl Example {
                         .style(button::danger)
                         .padding(3)
                         .on_press_maybe(
-                            if total_panes > 1 && !pane.is_pinned {
+                            if self.panes.len() > 1 && !pane.is_pinned {
                                 Some(Message::Close(id))
                             } else {
                                 None
@@ -209,7 +274,7 @@ impl Example {
                 });
 
             pane_grid::Content::new(responsive(move |size| {
-                view_content(id, total_panes, pane.is_pinned, size)
+                view_content(id, self.panes.len(), pane.is_pinned, size)
             }))
             .title_bar(title_bar)
             .style(if is_focused {
@@ -225,18 +290,19 @@ impl Example {
         .on_drag(Message::Dragged)
         .on_resize(10, Message::Resized);
 
-        let cli_panel = self.view_cli_panel();
-
-        let content = column![
-            container(pane_grid).padding(10),
-            container(cli_panel).padding(10)
+        let content = row![
+            container(left_panel).width(Length::FillPortion(1)),
+            container(right_panel).width(Length::FillPortion(2)),
         ]
         .spacing(20);
 
-        container(content).into()
+        container(content)
+            .padding(10)
+            .into()
     }
 
-    fn view_cli_panel<'a>(&self) -> Element<'a, Message> {
+    #[allow(dead_code)]
+    fn view_cli_panel(&self) -> Element<Message> {
         let start_btn = button(text("Start Server").size(16))
             .padding(8)
             .on_press(Message::CliStart);
@@ -253,6 +319,80 @@ impl Example {
             .padding(10)
             .center_x(Fill)
             .into()
+    }
+
+    fn view_agent_panel(&self) -> Element<Message> {
+        let header = Text::new("AI Agents Management")
+            .size(24)
+            .style(move |_: &Theme| iced::widget::text::Style {
+                color: Some(Color::from_rgb(0.5, 0.5, 0.5)),
+                ..Default::default()
+            });
+
+        let logs_section = container(
+            column![
+                Text::new("System Logs").size(16),
+                scrollable(
+                    column(Vec::from_iter(
+                        self.logs.iter()
+                            .map(|log| Text::new(log.clone()).size(12).into())
+                            .collect::<Vec<_>>()
+                    ))
+                ).height(Length::Fixed(100.0))
+            ]
+        ).padding(10);
+
+        let mut agent_list = column![header].spacing(10);
+
+        for agent in &self.agents {
+            let status_color = match agent.status {
+                AgentStatus::Active => Color::from_rgb(0.0, 0.8, 0.0),
+                _ => Color::from_rgb(0.8, 0.0, 0.0),
+            };
+
+            let status_indicator = Text::new("●")
+                .size(16)
+                .style(move |_: &Theme| iced::widget::text::Style {
+                    color: Some(status_color),
+                    ..Default::default()
+                });
+
+            let agent_row = row![
+                status_indicator,
+                Text::new(&agent.name).size(16),
+                button("Start")
+                    .on_press(Message::StartAgent(agent.id.clone()))
+                    .style(button::primary),
+                button("Stop")
+                    .on_press(Message::StopAgent(agent.id.clone()))
+                    .style(button::danger),
+                button("Details")
+                    .on_press(Message::ViewAgentDetails(agent.id.clone())),
+            ]
+            .spacing(10)
+            .align_y(iced::alignment::Vertical::Center);
+
+            agent_list = agent_list.push(agent_row);
+        }
+
+        let refresh_button = button("Refresh")
+            .on_press(Message::RefreshAgents)
+            .padding(10);
+
+        container(
+            column![
+                agent_list,
+                logs_section,
+                refresh_button,
+            ]
+            .spacing(20)
+            .padding(20)
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .into()
     }
 }
 
@@ -396,8 +536,17 @@ fn view_controls<'a>(
     row.push(close).into()
 }
 
-fn responsive<'a, F: 'a + Fn(Size) -> Element<'a, Message>>(f: F) -> Element<'a, Message> {
-    f(Size::new(300.0, 200.0))
+fn responsive<'a, Message>(
+    f: impl Fn(Size) -> Element<'a, Message> + 'a,
+) -> Element<'a, Message> 
+where
+    Message: 'a,
+{
+    let content = f(Size::new(0.0, 0.0));
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 mod style {

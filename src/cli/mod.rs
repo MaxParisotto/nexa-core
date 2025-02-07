@@ -79,6 +79,23 @@ pub struct AgentConfig {
     pub timeout_seconds: u64,
 }
 
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_tasks: 4,
+            priority_threshold: 0,
+            llm_provider: "LMStudio".to_string(),
+            llm_model: "default".to_string(),
+            retry_policy: RetryPolicy {
+                max_retries: 3,
+                backoff_ms: 1000,
+                max_backoff_ms: 10000,
+            },
+            timeout_seconds: 30,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RetryPolicy {
     pub max_retries: u32,
@@ -1006,6 +1023,15 @@ impl CliHandler {
         }
         
         Ok(workflows)
+    }
+
+    pub async fn update_agent_config(&self, id: String, config: AgentConfig) -> Result<(), String> {
+        if let Ok(mut agent) = self.get_agent(&id).await {
+            agent.config = config;
+            self.save_agent(&agent).await
+        } else {
+            Err(format!("Agent {} not found", id))
+        }
     }
 }
 
