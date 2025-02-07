@@ -4,8 +4,8 @@ use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
     button, column, container, row, scrollable, text, Text, Row,
 };  
-use iced::{Color, Element, Fill, Length, Size, Subscription, Theme};
-use crate::models::agent::{Agent, AgentStatus};
+use iced::{Element, Length, Size, Subscription};
+use crate::models::agent::Agent;
 
 use iced::Task;
 use iced::widget::text_input;
@@ -21,6 +21,39 @@ pub fn main() -> iced::Result {
         .run()
 }
 
+#[derive(Debug, Clone)]
+enum View {
+    Agents,
+    Settings,
+    Logs,
+}
+
+#[derive(Debug, Clone)]
+struct LLMSettingsState {
+    servers: Vec<LLMServerConfig>,
+    selected_provider: String,
+    available_models: Vec<LLMModel>,
+    new_server_url: String,
+    new_server_provider: String,
+}
+
+#[derive(Debug, Clone)]
+struct LLMServerConfig {
+    provider: String,
+    url: String,
+    is_connected: bool,
+    selected_model: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LLMModel {
+    name: String,
+    size: String,
+    context_length: usize,
+    quantization: Option<String>,
+    description: String,
+}
+
 struct Example {
     panes: pane_grid::State<Pane>,
     panes_created: usize,
@@ -33,6 +66,8 @@ struct Example {
     search_query: String,
     sort_order: SortOrder,
     dock_items: Vec<DockItem>,
+    llm_settings: LLMSettingsState,
+    current_view: View,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +101,15 @@ enum Message {
     Batch(Vec<Message>),
     SearchQueryChanged(String),
     SortOrderChanged(SortOrder),
+    AddLLMServer(String, String),
+    RemoveLLMServer(String),
+    ConnectToLLM(String),
+    DisconnectFromLLM(String),
+    SelectModel(String, String),
+    UpdateNewServerUrl(String),
+    UpdateNewServerProvider(String),
+    ModelsLoaded(String, Vec<LLMModel>),
+    ChangeView(View),
 }
 
 impl Example {
@@ -77,33 +121,41 @@ impl Example {
             DockItem {
                 name: "Agents".to_string(),
                 icon: "👥",
-                action: Message::ViewAgentDetails(String::new()),
+                action: Message::ChangeView(View::Agents),
             },
             DockItem {
                 name: "Settings".to_string(),
                 icon: "⚙️",
-                action: Message::CliStatus,
+                action: Message::ChangeView(View::Settings),
             },
             DockItem {
                 name: "Logs".to_string(),
                 icon: "📝",
-                action: Message::ClearLogs,
+                action: Message::ChangeView(View::Logs),
             },
         ];
 
         (
-            Example {
-                panes,
-                panes_created: 1,
-                focus: None,
-                cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
-                agents: Vec::new(),
-                selected_agent: None,
-                logs: Vec::new(),
+        Example {
+            panes,
+            panes_created: 1,
+            focus: None,
+            cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
+            agents: Vec::new(),
+            selected_agent: None,
+            logs: Vec::new(),
                 config_state: AgentConfigState::default(),
                 search_query: String::new(),
                 sort_order: SortOrder::NameAsc,
                 dock_items,
+                llm_settings: LLMSettingsState {
+                    servers: Vec::new(),
+                    selected_provider: String::new(),
+                    available_models: Vec::new(),
+                    new_server_url: String::new(),
+                    new_server_provider: String::new(),
+                },
+                current_view: View::Agents,
             },
             Task::none(),
         )
@@ -291,8 +343,12 @@ impl Example {
                 // Implementation for connecting to an LLM
                 Task::none()
             }
-            Message::DisconnectLLM(_id) => {
-                // Implementation for disconnecting from an LLM
+            Message::DisconnectLLM(provider) => {
+                if let Some(server) = self.llm_settings.servers.iter_mut()
+                    .find(|s| s.provider == provider) {
+                    server.is_connected = false;
+                }
+                self.llm_settings.selected_provider = String::new();
                 Task::none()
             }
             Message::AgentsUpdated(new_agents) => {
@@ -420,48 +476,118 @@ impl Example {
                 self.sort_order = order;
                 Task::none()
             }
+            Message::AddLLMServer(url, provider) => {
+                self.llm_settings.servers.push(LLMServerConfig {
+                    provider: provider.clone(),
+                    url: url.clone(),
+                    is_connected: false,
+                    selected_model: None,
+                });
+                Task::none()
+            }
+            Message::RemoveLLMServer(provider) => {
+                self.llm_settings.servers.retain(|server| server.provider != provider);
+                Task::none()
+            }
+            Message::ConnectToLLM(provider) => {
+                self.llm_settings.selected_provider = provider.clone();
+                Task::none()
+            }
+            Message::DisconnectFromLLM(provider) => {
+                if let Some(server) = self.llm_settings.servers.iter_mut()
+                    .find(|s| s.provider == provider) {
+                    server.is_connected = false;
+                }
+                self.llm_settings.selected_provider = String::new();
+                Task::none()
+            }
+            Message::SelectModel(model, provider) => {
+                if let Some(server) = self.llm_settings.servers.iter_mut()
+                    .find(|s| s.provider == provider) {
+                    server.selected_model = Some(model.clone());
+                }
+                
+                let handler = self.cli_handler.clone();
+                let provider_clone = provider.clone();
+                let model_clone = model.clone();
+                
+                Task::perform(
+                    async move {
+                        if let Err(e) = handler.select_model(&provider_clone, &model_clone).await {
+                            Message::ShowLogs(format!("Failed to select model: {}", e))
+                        } else {
+                            Message::ShowLogs(format!("Selected model {} for {}", model, provider))
+                        }
+                    },
+                    |msg| msg
+                )
+            }
+            Message::UpdateNewServerUrl(url) => {
+                self.llm_settings.new_server_url = url.clone();
+                Task::none()
+            }
+            Message::UpdateNewServerProvider(provider) => {
+                self.llm_settings.new_server_provider = provider.clone();
+                Task::none()
+            }
+            Message::ModelsLoaded(_provider, models) => {
+                self.llm_settings.available_models = models;
+                Task::none()
+            }
+            Message::ChangeView(view) => {
+                self.current_view = view;
+                Task::none()
+            }
         }
     }
 
     fn view(&self) -> Element<Message> {
-        let dock_buttons = Row::with_children(
-            self.dock_items.iter().map(|item| {
-                button(
-                    container(
-                        column![
-                            Text::new(item.icon).size(32),
-                            Text::new(&item.name).size(12),
-                        ]
-                        .spacing(5)
-                    )
-                    .padding(10)
-                    .style(style::dock_item)
-                )
-                .on_press(item.action.clone())
-                .style(button::secondary)
-                .into()
-            }).collect::<Vec<Element<_>>>()
-        ).spacing(15);
+        let content = match self.current_view {
+            View::Agents => self.view_agent_panel(),
+            View::Settings => self.view_settings(),
+            View::Logs => self.view_logs_panel(),
+        };
 
-        let content = column![
-            row![
-                container(self.view_agent_panel()).width(Length::FillPortion(1)),
+        let dock_items: Vec<Element<Message>> = self.dock_items.iter().map(|item| {
+            let button: Element<Message> = button(
                 container(
-                    if self.selected_agent.is_some() {
-                        self.view_agent_details()
-                    } else {
-                        self.view_pane_grid()
-                    }
-                ).width(Length::FillPortion(2)),
-            ].spacing(20),
-            // Add dock
-            container(dock_buttons)
+                    column![
+                        Text::new(item.icon).size(32),
+                        Text::new(&item.name).size(12),
+                    ]
+                    .spacing(5)
+                )
                 .padding(10)
-                .style(style::dock),
-        ];
+                .style(style::dock_item)
+            )
+            .on_press(item.action.clone())
+            .style(if let Message::ChangeView(ref view) = item.action {
+                if std::mem::discriminant(view) == std::mem::discriminant(&self.current_view) {
+                    button::primary
+                } else {
+                    button::secondary
+                }
+            } else {
+                button::secondary
+            })
+            .into();
+            button
+        }).collect();
 
-        container(content)
+        let dock_buttons: Element<Message> = Row::with_children(dock_items).spacing(15).into();
+
+        let dock_container: Element<Message> = container(dock_buttons)
             .padding(10)
+            .style(style::dock)
+            .into();
+
+        let column_content: Element<Message> = column![
+            content,
+            dock_container,
+        ].into();
+
+        container(column_content)
+            .padding(20)
             .style(style::main_container)
             .into()
     }
@@ -488,6 +614,7 @@ impl Example {
             })
     }
 
+    #[allow(dead_code)]
     fn view_pane_grid(&self) -> Element<Message> {
         let pane_grid = PaneGrid::new(
             &self.panes,
@@ -508,6 +635,529 @@ impl Example {
             .height(Length::Fill)
             .padding(10)
             .into()
+    }
+
+    fn view_settings(&self) -> Element<Message> {
+        let header = container(
+            Text::new("LLM Settings")
+                .size(32)
+                .style(style::header_text)
+        )
+        .padding(20)
+        .style(style::panel_content);
+
+        let add_server_form = container(
+            column![
+                Text::new("Add New LLM Server")
+                    .size(24)
+                    .style(style::header_text),
+                row![
+                    text_input("Provider (e.g. LMStudio, Ollama)", &self.llm_settings.new_server_provider)
+                        .on_input(Message::UpdateNewServerProvider)
+                        .padding(10)
+                        .size(16),
+                    text_input("Server URL", &self.llm_settings.new_server_url)
+                        .on_input(Message::UpdateNewServerUrl)
+                        .padding(10)
+                        .size(16),
+                    button(Text::new("Add Server").size(16))
+                        .on_press(Message::AddLLMServer(
+                            self.llm_settings.new_server_provider.clone(),
+                            self.llm_settings.new_server_url.clone()
+                        ))
+                        .padding(10)
+                        .style(button::primary),
+                ].spacing(15),
+            ]
+            .spacing(20)
+        )
+        .padding(20)
+        .style(style::panel_content);
+
+        let servers_list = container(
+            column(
+                self.llm_settings.servers.iter().map(|server| {
+                    container(
+                        column![
+                            row![
+                                Text::new(&server.provider).size(20).style(style::header_text),
+                                Text::new(&server.url).size(16),
+                                if server.is_connected {
+                                    button(Text::new("Disconnect").size(16))
+                                        .on_press(Message::DisconnectFromLLM(server.provider.clone()))
+                                        .style(button::danger)
+                                } else {
+                                    button(Text::new("Connect").size(16))
+                                        .on_press(Message::ConnectToLLM(server.provider.clone()))
+                                        .style(button::primary)
+                                },
+                                button(Text::new("Remove").size(16))
+                                    .on_press(Message::RemoveLLMServer(server.provider.clone()))
+                                    .style(button::danger),
+                            ].spacing(15),
+                            if server.is_connected {
+                                container(
+                                    column![
+                                        Text::new("Available Models").size(16).style(style::header_text),
+                                        column(
+                                            self.llm_settings.available_models.iter().map(|model| {
+                                                container(
+                                                    row![
+                                                        column![
+                                                            Text::new(&model.name).size(16),
+                                                            Text::new(&model.description).size(14),
+                                                        ],
+                                                        Text::new(format!("Size: {}", model.size)).size(14),
+                                                        Text::new(format!("Context: {}k tokens", model.context_length / 1024)).size(14),
+                                                        if let Some(quant) = &model.quantization {
+                                                            Text::new(format!("Quantization: {}", quant)).size(14)
+                                                        } else {
+                                                            Text::new("").size(14)
+                                                        },
+                                                        button(
+                                                            Text::new(
+                                                                if Some(&model.name) == server.selected_model.as_ref() {
+                                                                    "Selected"
+                                                                } else {
+                                                                    "Select"
+                                                                }
+                                                            ).size(14)
+                                                        )
+                                                        .on_press(Message::SelectModel(
+                                                            server.provider.clone(),
+                                                            model.name.clone()
+                                                        ))
+                                                        .style(
+                                                            if Some(&model.name) == server.selected_model.as_ref() {
+                                                                button::primary
+                                                            } else {
+                                                                button::secondary
+                                                            }
+                                                        ),
+                                                    ]
+                                                    .spacing(15)
+                                                    .align_y(iced::alignment::Vertical::Center)
+                                                )
+                                                .padding(10)
+                                                .style(style::panel_content)
+                                                .into()
+                                            }).collect::<Vec<Element<Message>>>()
+                                        ).spacing(10)
+                                    ]
+                                ).padding(10)
+                                .into()
+                            } else {
+                                let content: Element<Message> = container(
+                                    Text::new("Connect to view available models")
+                                        .size(14)
+                                ).padding(10)
+                                 .style(style::panel_content)
+                                 .into();
+                                content
+                            }
+                        ]
+                        .spacing(15)
+                    )
+                    .padding(15)
+                    .style(style::panel_content)
+                    .into()
+                }).collect::<Vec<Element<Message>>>()
+            ).spacing(20)
+        )
+        .padding(20)
+        .style(style::panel_content);
+
+        container(
+            column![
+                header,
+                add_server_form,
+                servers_list,
+            ]
+            .spacing(20)
+        )
+        .padding(20)
+        .into()
+    }
+
+    fn view_logs_panel(&self) -> Element<Message> {
+        container(
+            column![
+                Text::new("System Logs")
+                    .size(32)
+                    .style(style::header_text),
+                scrollable(
+                    column(
+                        self.logs.iter()
+                            .map(|log| Text::new(log).size(14).into())
+                            .collect::<Vec<Element<Message>>>()
+                    ).spacing(10)
+                ).height(Length::Fill),
+                button(
+                    Text::new("Clear Logs")
+                        .size(16)
+                )
+                .on_press(Message::ClearLogs)
+                .padding(15)
+                .style(button::danger),
+            ]
+            .spacing(20)
+        )
+        .padding(20)
+        .style(style::panel_content)
+        .into()
+    }
+
+    fn view_agent_panel(&self) -> Element<Message> {
+        match &self.selected_agent {
+            Some(_) => self.view_agent_details(),
+            None => {
+                let header = container(
+                    Text::new("AI Agents Management")
+                        .size(32)
+                        .style(style::header_text)
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                // Add search input with new styling
+                let search_bar = container(
+                    row![
+                        Text::new("🔍").size(20),
+                        text_input("Search agents...", &self.search_query)
+                            .on_input(Message::SearchQueryChanged)
+                            .padding(10)
+                            .size(16)
+                            .width(Length::Fill),
+                    ]
+                    .spacing(15)
+                )
+                .padding(15)
+                .style(style::search_bar);
+
+                let sort_controls = container(
+                    row![
+                        Text::new("Sort by:").size(16).style(style::header_text),
+                        button(Text::new("Name").size(16))
+                            .on_press(Message::SortOrderChanged(
+                                if self.sort_order == SortOrder::NameAsc {
+                                    SortOrder::NameDesc
+                                } else {
+                                    SortOrder::NameAsc
+                                }
+                            ))
+                            .padding(10)
+                            .style(if matches!(self.sort_order, SortOrder::NameAsc | SortOrder::NameDesc) {
+                                button::primary
+                            } else {
+                                button::secondary
+                            }),
+                        button(Text::new("Status").size(16))
+                            .on_press(Message::SortOrderChanged(
+                                if self.sort_order == SortOrder::StatusAsc {
+                                    SortOrder::StatusDesc
+                                } else {
+                                    SortOrder::StatusAsc
+                                }
+                            ))
+                            .padding(10)
+                            .style(if matches!(self.sort_order, SortOrder::StatusAsc | SortOrder::StatusDesc) {
+                                button::primary
+                            } else {
+                                button::secondary
+                            }),
+                        button(Text::new("Last Active").size(16))
+                            .on_press(Message::SortOrderChanged(
+                                if self.sort_order == SortOrder::LastActiveAsc {
+                                    SortOrder::LastActiveDesc
+                                } else {
+                                    SortOrder::LastActiveAsc
+                                }
+                            ))
+                            .padding(10)
+                            .style(if matches!(self.sort_order, SortOrder::LastActiveAsc | SortOrder::LastActiveDesc) {
+                                button::primary
+                            } else {
+                                button::secondary
+                            }),
+                    ]
+                    .spacing(15)
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let mut agent_list = column![header, search_bar, sort_controls].spacing(20);
+
+                // Filter and sort agents
+                let mut filtered_agents: Vec<_> = self.agents.iter()
+                    .filter(|agent| {
+                        if self.search_query.is_empty() {
+                            true
+                        } else {
+                            agent.name.to_lowercase().contains(&self.search_query.to_lowercase()) ||
+                            agent.id.to_lowercase().contains(&self.search_query.to_lowercase())
+                        }
+                    })
+                    .collect();
+
+                filtered_agents.sort_by(|a, b| {
+                    match self.sort_order {
+                        SortOrder::NameAsc => a.name.cmp(&b.name),
+                        SortOrder::NameDesc => b.name.cmp(&a.name),
+                        SortOrder::StatusAsc => a.status.cmp(&b.status),
+                        SortOrder::StatusDesc => b.status.cmp(&a.status),
+                        SortOrder::LastActiveAsc => a.last_heartbeat.cmp(&b.last_heartbeat),
+                        SortOrder::LastActiveDesc => b.last_heartbeat.cmp(&a.last_heartbeat),
+                    }
+                });
+
+                for agent in filtered_agents {
+                    let agent_row = container(
+                        row![
+                            container(
+                                Text::new("●")
+                                    .size(12)
+                            )
+                            .padding(5)
+                            .style(|theme| style::status_badge_style(agent.status)(theme)),
+                        Text::new(&agent.name).size(16),
+                            row![
+                                button(Text::new("Start").size(14))
+                            .on_press(Message::StartAgent(agent.id.clone()))
+                                .padding(10)
+                            .style(button::primary),
+                                button(Text::new("Stop").size(14))
+                            .on_press(Message::StopAgent(agent.id.clone()))
+                                .padding(10)
+                            .style(button::danger),
+                                button(Text::new("Details").size(14))
+                                    .on_press(Message::ViewAgentDetails(agent.id.clone()))
+                                    .padding(10),
+                            ].spacing(10)
+                        ]
+                        .spacing(15)
+                        .align_y(iced::alignment::Vertical::Center)
+                    )
+                    .padding(15)
+                    .style(style::panel_content);
+
+                    agent_list = agent_list.push(agent_row);
+                }
+
+                let logs_section = container(
+                    column![
+                        Text::new("System Logs").size(20).style(style::header_text),
+                        scrollable(
+                            column(
+                                self.logs.iter()
+                                    .map(|log| Text::new(log).size(14).into())
+                                    .collect::<Vec<Element<Message>>>()
+                            ).spacing(10)
+                        ).height(Length::Fixed(200.0))
+                    ]
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let refresh_button = button(
+                    Text::new("Refresh Agents")
+                        .size(16)
+                )
+                    .on_press(Message::RefreshAgents)
+                .padding(15)
+                .style(button::primary);
+
+                container(
+                    column![
+                        agent_list,
+                        logs_section,
+                        refresh_button,
+                    ]
+                    .spacing(20)
+                )
+                    .padding(20)
+                .into()
+            }
+        }
+    }
+
+    fn view_agent_details(&self) -> Element<Message> {
+        if let Some(agent_id) = &self.selected_agent {
+            if let Some(agent) = self.agents.iter().find(|a| &a.id == agent_id) {
+                let header = container(
+                    Text::new(format!("Agent Details: {}", agent.name))
+                        .size(32)
+                        .style(style::header_text)
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let details = container(
+                    column![
+                        row![
+                            container(
+                                Text::new("●")
+                                    .size(12)
+                            )
+                            .padding(5)
+                            .style(|theme| style::status_badge_style(agent.status)(theme)),
+                            Text::new(format!("Status: {:?}", agent.status))
+                                .size(16)
+                                .style(style::header_text)
+                        ].spacing(10),
+                        row![
+                            Text::new("ID: ").size(16).style(style::header_text),
+                            Text::new(&agent.id).size(16)
+                        ],
+                        row![
+                            Text::new("Capabilities: ").size(16).style(style::header_text),
+                            Text::new(agent.capabilities.join(", ")).size(16)
+                        ],
+                        row![
+                            Text::new("Last Heartbeat: ").size(16).style(style::header_text),
+                            Text::new(agent.last_heartbeat.to_string()).size(16)
+                        ],
+                        if let Some(task) = &agent.current_task {
+                            row![
+                                Text::new("Current Task: ").size(16).style(style::header_text),
+                                Text::new(task).size(16)
+                            ]
+                        } else {
+                            row![
+                                Text::new("Current Task: ").size(16).style(style::header_text),
+                                Text::new("None").size(16)
+                            ]
+                        },
+                    ]
+                    .spacing(15)
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let config_form = container(
+                    column![
+                        Text::new("Agent Configuration")
+                            .size(24)
+                            .style(style::header_text),
+                        column![
+                            row![
+                                Text::new("Max Concurrent Tasks: ").size(16),
+                                text_input(
+                                    "4",
+                                    &self.config_state.max_concurrent_tasks,
+                                )
+                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateMaxTasks(value)))
+                                .padding(10)
+                                .size(16)
+                            ],
+                            row![
+                                Text::new("Priority Threshold: ").size(16),
+                                text_input(
+                                    "0",
+                                    &self.config_state.priority_threshold,
+                                )
+                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdatePriority(value)))
+                                .padding(10)
+                                .size(16)
+                            ],
+                            row![
+                                Text::new("LLM Provider: ").size(16),
+                                text_input(
+                                    "LMStudio",
+                                    &self.config_state.llm_provider,
+                                )
+                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateProvider(value)))
+                                .padding(10)
+                                .size(16)
+                            ],
+                            row![
+                                Text::new("LLM Model: ").size(16),
+                                text_input(
+                                    "default",
+                                    &self.config_state.llm_model,
+                                )
+                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateModel(value)))
+                                .padding(10)
+                                .size(16)
+                            ],
+                            row![
+                                Text::new("Timeout (seconds): ").size(16),
+                                text_input(
+                                    "30",
+                                    &self.config_state.timeout_seconds,
+                                )
+                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateTimeout(value)))
+                                .padding(10)
+                                .size(16)
+                            ],
+                        ].spacing(15)
+                    ]
+                    .spacing(20)
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let logs = self.logs.iter()
+                    .filter(|log| log.contains(&agent.id))
+                    .collect::<Vec<_>>();
+
+                let log_view = container(
+                    column![
+                        Text::new("Agent Logs")
+                            .size(24)
+                            .style(style::header_text),
+                        scrollable(
+                            column(
+                                logs.iter()
+                                    .map(|log| Text::new(log.as_str()).size(14).into())
+                                    .collect::<Vec<Element<Message>>>()
+                            ).spacing(10)
+                        ).height(Length::Fixed(200.0))
+                    ]
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let close_button = button(
+                    Text::new("Close Details")
+                        .size(16)
+                )
+                .on_press(Message::ViewAgentDetails(String::new()))
+                .padding(15)
+                .style(button::primary);
+
+                container(
+                    column![
+                        header,
+                        details,
+                        config_form,
+                        log_view,
+                        close_button,
+                    ]
+                    .spacing(20)
+                )
+                .padding(20)
+                .style(style::panel_content)
+                .into()
+            } else {
+                container(
+                    Text::new("Agent not found")
+                        .size(32)
+                        .style(style::header_text)
+                )
+                .padding(20)
+                .style(style::panel_content)
+                .into()
+            }
+        } else {
+            container(
+                Text::new("Select an agent to view details")
+                    .size(32)
+                    .style(style::header_text)
+            )
+            .padding(20)
+            .style(style::panel_content)
+            .into()
+        }
     }
 }
 
@@ -541,314 +1191,6 @@ enum ConfigMessage {
     UpdateTimeout(String),
 }
 
-impl Example {
-    fn view_agent_panel(&self) -> Element<Message> {
-        let header = Text::new("AI Agents Management")
-            .size(24)
-            .style(style::header_text);
-
-        // Add search input
-        let search_bar = container(
-            row![
-                Text::new("🔍").size(16),
-                text_input("Search agents...", &self.search_query)
-                    .on_input(Message::SearchQueryChanged)
-                    .padding(5)
-                    .width(Length::Fill),
-            ]
-            .spacing(10)
-        ).padding(15)
-        .style(style::panel_content);
-
-        let sort_controls = container(
-            row![
-                Text::new("Sort by: ").size(14),
-                button(Text::new("Name").size(14))
-                    .on_press(Message::SortOrderChanged(
-                        if self.sort_order == SortOrder::NameAsc {
-                            SortOrder::NameDesc
-                        } else {
-                            SortOrder::NameAsc
-                        }
-                    ))
-                    .style(if matches!(self.sort_order, SortOrder::NameAsc | SortOrder::NameDesc) {
-                        button::primary
-                    } else {
-                        button::secondary
-                    }),
-                button(Text::new("Status").size(14))
-                    .on_press(Message::SortOrderChanged(
-                        if self.sort_order == SortOrder::StatusAsc {
-                            SortOrder::StatusDesc
-                        } else {
-                            SortOrder::StatusAsc
-                        }
-                    ))
-                    .style(if matches!(self.sort_order, SortOrder::StatusAsc | SortOrder::StatusDesc) {
-                        button::primary
-                    } else {
-                        button::secondary
-                    }),
-                button(Text::new("Last Active").size(14))
-                    .on_press(Message::SortOrderChanged(
-                        if self.sort_order == SortOrder::LastActiveAsc {
-                            SortOrder::LastActiveDesc
-                        } else {
-                            SortOrder::LastActiveAsc
-                        }
-                    ))
-                    .style(if matches!(self.sort_order, SortOrder::LastActiveAsc | SortOrder::LastActiveDesc) {
-                        button::primary
-                    } else {
-                        button::secondary
-                    }),
-            ].spacing(10)
-        ).padding(15)
-        .style(style::panel_content);
-
-        let mut agent_list = column![header, search_bar, sort_controls].spacing(15);
-
-        // Filter and sort agents
-        let mut filtered_agents: Vec<_> = self.agents.iter()
-            .filter(|agent| {
-                if self.search_query.is_empty() {
-                    true
-                } else {
-                    agent.name.to_lowercase().contains(&self.search_query.to_lowercase()) ||
-                    agent.id.to_lowercase().contains(&self.search_query.to_lowercase())
-                }
-            })
-            .collect();
-
-        // Sort agents based on current sort order
-        filtered_agents.sort_by(|a, b| {
-            match self.sort_order {
-                SortOrder::NameAsc => a.name.cmp(&b.name),
-                SortOrder::NameDesc => b.name.cmp(&a.name),
-                SortOrder::StatusAsc => a.status.cmp(&b.status),
-                SortOrder::StatusDesc => b.status.cmp(&a.status),
-                SortOrder::LastActiveAsc => a.last_heartbeat.cmp(&b.last_heartbeat),
-                SortOrder::LastActiveDesc => b.last_heartbeat.cmp(&a.last_heartbeat),
-            }
-        });
-
-        for agent in filtered_agents {
-            let status_color = match agent.status {
-                AgentStatus::Active => Color::from_rgb(0.0, 0.8, 0.0),
-                _ => Color::from_rgb(0.8, 0.0, 0.0),
-            };
-
-            let status_indicator = Text::new("●")
-                .size(16)
-                .style(move |_: &Theme| iced::widget::text::Style {
-                    color: Some(status_color),
-                    ..Default::default()
-                });
-
-            let agent_row = row![
-                status_indicator,
-                Text::new(&agent.name).size(16),
-                button("Start")
-                    .on_press(Message::StartAgent(agent.id.clone()))
-                    .style(button::primary),
-                button("Stop")
-                    .on_press(Message::StopAgent(agent.id.clone()))
-                    .style(button::danger),
-                button("Details")
-                    .on_press(Message::ViewAgentDetails(agent.id.clone())),
-            ]
-            .spacing(10)
-            .align_y(iced::alignment::Vertical::Center);
-
-            agent_list = agent_list.push(agent_row);
-        }
-
-        let agent_list_container = container(agent_list)
-            .padding(15)
-            .style(style::panel_content);
-
-        let logs_section = container(
-            column![
-                Text::new("System Logs").size(16).style(style::header_text),
-                scrollable(
-                    column(Vec::from_iter(
-                        self.logs.iter()
-                            .map(|log| Text::new(log.clone()).size(12).into())
-                            .collect::<Vec<_>>()
-                    ))
-                ).height(Length::Fixed(150.0))
-            ]
-        ).padding(15)
-        .style(style::panel_content);
-
-        let refresh_button = button("Refresh")
-            .on_press(Message::RefreshAgents)
-            .padding(10)
-            .style(button::primary);
-
-        container(
-            column![
-                agent_list_container,
-                logs_section,
-                refresh_button,
-            ]
-            .spacing(20)
-            .padding(20)
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Fill)
-        .center_y(Fill)
-        .into()
-    }
-
-    fn view_agent_details(&self) -> Element<Message> {
-        if let Some(agent_id) = &self.selected_agent {
-            if let Some(agent) = self.agents.iter().find(|a| &a.id == agent_id) {
-                let header = Text::new(format!("Agent Details: {}", agent.name))
-                    .size(24)
-                    .style(style::header_text);
-
-                let details = container(
-                    column![
-                        row![
-                            Text::new("Status: ").size(16),
-                            Text::new(format!("{:?}", agent.status)).size(16)
-                        ],
-                        row![
-                            Text::new("ID: ").size(16),
-                            Text::new(&agent.id).size(16)
-                        ],
-                        row![
-                            Text::new("Capabilities: ").size(16),
-                            Text::new(agent.capabilities.join(", ")).size(16)
-                        ],
-                        row![
-                            Text::new("Last Heartbeat: ").size(16),
-                            Text::new(agent.last_heartbeat.to_string()).size(16)
-                        ],
-                        if let Some(task) = &agent.current_task {
-                            row![
-                                Text::new("Current Task: ").size(16),
-                                Text::new(task).size(16)
-                            ]
-                        } else {
-                            row![
-                                Text::new("Current Task: ").size(16),
-                                Text::new("None").size(16)
-                            ]
-                        },
-                    ]
-                    .spacing(10)
-                    .padding(10)
-                ).style(style::panel_content);
-
-                let config_form = container(
-                    column![
-                        Text::new("Agent Configuration").size(16).style(style::header_text),
-                        row![
-                            Text::new("Max Concurrent Tasks: ").size(14),
-                            text_input(
-                                "4",
-                                &self.config_state.max_concurrent_tasks,
-                            )
-                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateMaxTasks(value)))
-                            .padding(5)
-                        ],
-                        row![
-                            Text::new("Priority Threshold: ").size(14),
-                            text_input(
-                                "0",
-                                &self.config_state.priority_threshold,
-                            )
-                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdatePriority(value)))
-                            .padding(5)
-                        ],
-                        row![
-                            Text::new("LLM Provider: ").size(14),
-                            text_input(
-                                "LMStudio",
-                                &self.config_state.llm_provider,
-                            )
-                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateProvider(value)))
-                            .padding(5)
-                        ],
-                        row![
-                            Text::new("LLM Model: ").size(14),
-                            text_input(
-                                "default",
-                                &self.config_state.llm_model,
-                            )
-                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateModel(value)))
-                            .padding(5)
-                        ],
-                        row![
-                            Text::new("Timeout (seconds): ").size(14),
-                            text_input(
-                                "30",
-                                &self.config_state.timeout_seconds,
-                            )
-                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateTimeout(value)))
-                            .padding(5)
-                        ],
-                    ]
-                    .spacing(10)
-                    .padding(10)
-                ).style(style::panel_content);
-
-                let logs = self.logs.iter()
-                    .filter(|log| log.contains(&agent.id))
-                    .collect::<Vec<_>>();
-
-                let log_view = container(
-                    column![
-                        Text::new("Agent Logs").size(16),
-                        scrollable(
-                            column(
-                                logs.iter()
-                                    .map(|log| Text::new(log.as_str()).size(12).into())
-                                    .collect::<Vec<Element<_>>>()
-                            )
-                        ).height(Length::Fixed(200.0))
-                    ]
-                ).padding(10)
-                .style(style::panel_content);
-
-                container(
-                    column![
-                        header,
-                        details,
-                        config_form,
-                        log_view,
-                        button("Close Details")
-                            .on_press(Message::ViewAgentDetails(String::new()))
-                            .padding(10)
-                    ]
-                    .spacing(20)
-                )
-                .padding(20)
-                .into()
-            } else {
-                container(
-                    Text::new("Agent not found")
-                        .size(24)
-                        .style(style::header_text)
-                )
-                .padding(20)
-                .into()
-            }
-        } else {
-            container(
-                Text::new("Select an agent to view details")
-                    .size(24)
-                    .style(style::header_text)
-            )
-            .padding(20)
-            .into()
-        }
-    }
-}
-
 impl Default for Example {
     fn default() -> Self {
         Example::new().0
@@ -878,7 +1220,7 @@ fn handle_hotkey(key: keyboard::Key) -> Option<Message> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Pane {
     id: usize,
     pub is_pinned: bool,
@@ -896,76 +1238,79 @@ impl Pane {
 mod style {
     use iced::widget::container;
     use iced::{Border, Theme, Color, Shadow};
+    use crate::models::agent::AgentStatus;
 
-    // Helper function for consistent colors
-    fn get_theme_colors(_theme: &Theme) -> (Color, Color, Color, Color) {
+    // Modern color palette with better contrast
+    fn get_theme_colors(_theme: &Theme) -> (Color, Color, Color, Color, Color) {
         (
-            Color::from_rgb(0.98, 0.98, 0.98), // Background
-            Color::from_rgb(0.95, 0.95, 0.95), // Secondary Background
-            Color::from_rgb(0.85, 0.85, 0.85), // Border
-            Color::from_rgb(0.5, 0.5, 0.5),    // Text
+            Color::from_rgb(0.98, 0.99, 1.00),    // Background
+            Color::from_rgb(0.95, 0.97, 0.99),    // Secondary Background
+            Color::from_rgb(0.90, 0.92, 0.95),    // Border
+            Color::from_rgb(0.15, 0.18, 0.20),    // Text
+            Color::from_rgb(0.35, 0.53, 0.90),    // Accent
         )
     }
 
     pub fn dock_item(theme: &Theme) -> container::Style {
-        let (_, _, border_color, _) = get_theme_colors(theme);
+        let (_, _, border_color, _, accent) = get_theme_colors(theme);
         
         container::Style {
             background: Some(Color::from_rgb(1.0, 1.0, 1.0).into()),
             border: Border {
                 width: 1.0,
                 color: border_color,
-                radius: (8.0).into(),
+                radius: (12.0).into(),
             },
             shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
-                offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: 5.0,
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.08),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 15.0,
             },
+            text_color: Some(accent),
             ..Default::default()
         }
     }
 
     pub fn dock(theme: &Theme) -> container::Style {
-        let (_, secondary_bg, border_color, _) = get_theme_colors(theme);
+        let (_, _, border_color, _, _) = get_theme_colors(theme);
         
         container::Style {
-            background: Some(secondary_bg.into()),
+            background: Some(Color::from_rgba(0.98, 0.98, 0.98, 0.85).into()),
             border: Border {
                 width: 1.0,
                 color: border_color,
-                radius: (16.0).into(),
+                radius: (20.0).into(),
             },
             shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.08),
-                offset: iced::Vector::new(0.0, 4.0),
-                blur_radius: 8.0,
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
+                offset: iced::Vector::new(0.0, 8.0),
+                blur_radius: 20.0,
             },
             ..Default::default()
         }
     }
 
     pub fn main_container(theme: &Theme) -> container::Style {
-        let (bg_color, _, border_color, _) = get_theme_colors(theme);
+        let (background, _, border_color, _, _) = get_theme_colors(theme);
         
         container::Style {
-            background: Some(bg_color.into()),
+            background: Some(background.into()),
             border: Border {
                 width: 1.0,
                 color: border_color,
-                radius: (10.0).into(),
+                radius: (16.0).into(),
             },
             shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.05),
-                offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: 10.0,
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.06),
+                offset: iced::Vector::new(0.0, 6.0),
+                blur_radius: 25.0,
             },
             ..Default::default()
         }
     }
 
     pub fn header_text(theme: &Theme) -> iced::widget::text::Style {
-        let (_, _, _, text_color) = get_theme_colors(theme);
+        let (_, _, _, text_color, _) = get_theme_colors(theme);
         
         iced::widget::text::Style {
             color: Some(text_color),
@@ -974,21 +1319,64 @@ mod style {
     }
 
     pub fn panel_content(theme: &Theme) -> container::Style {
-        let (bg_color, _, border_color, _) = get_theme_colors(theme);
-        
+        let (_, _, border_color, _, _) = get_theme_colors(theme);
+
         container::Style {
-            background: Some(bg_color.into()),
+            background: Some(Color::from_rgb(1.0, 1.0, 1.0).into()),
             border: Border {
                 width: 1.0,
                 color: border_color,
-                radius: (8.0).into(),
+                radius: (12.0).into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.04),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 12.0,
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn search_bar(theme: &Theme) -> container::Style {
+        let (_, background, border_color, _, _) = get_theme_colors(theme);
+
+        container::Style {
+            background: Some(background.into()),
+            border: Border {
+                width: 1.0,
+                color: border_color,
+                radius: (10.0).into(),
             },
             shadow: Shadow {
                 color: Color::from_rgba(0.0, 0.0, 0.0, 0.03),
-                offset: iced::Vector::new(0.0, 1.0),
-                blur_radius: 3.0,
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 8.0,
             },
             ..Default::default()
+        }
+    }
+
+    pub fn status_badge_style(status: AgentStatus) -> impl Fn(&Theme) -> container::Style {
+        move |_theme: &Theme| {
+            let color = match status {
+                AgentStatus::Active => Color::from_rgb(0.2, 0.8, 0.4),  // Green
+                AgentStatus::Idle => Color::from_rgb(0.9, 0.7, 0.2),    // Yellow
+            };
+
+            container::Style {
+                background: Some(color.into()),
+                border: Border {
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                    radius: (4.0).into(),
+                },
+                shadow: Shadow {
+                    color: Color::from_rgba(color.r, color.g, color.b, 0.3),
+                    offset: iced::Vector::new(0.0, 2.0),
+                    blur_radius: 4.0,
+                },
+                ..Default::default()
+            }
         }
     }
 }
