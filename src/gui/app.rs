@@ -557,53 +557,56 @@ impl Example {
                     .width(Length::Fill),
             ]
             .spacing(10)
-        ).padding(10);
+        ).padding(15)
+        .style(style::panel_content);
 
-        // Add sort controls
-        let sort_controls = row![
-            Text::new("Sort by: ").size(14),
-            button(Text::new("Name").size(14))
-                .on_press(Message::SortOrderChanged(
-                    if self.sort_order == SortOrder::NameAsc {
-                        SortOrder::NameDesc
+        let sort_controls = container(
+            row![
+                Text::new("Sort by: ").size(14),
+                button(Text::new("Name").size(14))
+                    .on_press(Message::SortOrderChanged(
+                        if self.sort_order == SortOrder::NameAsc {
+                            SortOrder::NameDesc
+                        } else {
+                            SortOrder::NameAsc
+                        }
+                    ))
+                    .style(if matches!(self.sort_order, SortOrder::NameAsc | SortOrder::NameDesc) {
+                        button::primary
                     } else {
-                        SortOrder::NameAsc
-                    }
-                ))
-                .style(if matches!(self.sort_order, SortOrder::NameAsc | SortOrder::NameDesc) {
-                    button::primary
-                } else {
-                    button::secondary
-                }),
-            button(Text::new("Status").size(14))
-                .on_press(Message::SortOrderChanged(
-                    if self.sort_order == SortOrder::StatusAsc {
-                        SortOrder::StatusDesc
+                        button::secondary
+                    }),
+                button(Text::new("Status").size(14))
+                    .on_press(Message::SortOrderChanged(
+                        if self.sort_order == SortOrder::StatusAsc {
+                            SortOrder::StatusDesc
+                        } else {
+                            SortOrder::StatusAsc
+                        }
+                    ))
+                    .style(if matches!(self.sort_order, SortOrder::StatusAsc | SortOrder::StatusDesc) {
+                        button::primary
                     } else {
-                        SortOrder::StatusAsc
-                    }
-                ))
-                .style(if matches!(self.sort_order, SortOrder::StatusAsc | SortOrder::StatusDesc) {
-                    button::primary
-                } else {
-                    button::secondary
-                }),
-            button(Text::new("Last Active").size(14))
-                .on_press(Message::SortOrderChanged(
-                    if self.sort_order == SortOrder::LastActiveAsc {
-                        SortOrder::LastActiveDesc
+                        button::secondary
+                    }),
+                button(Text::new("Last Active").size(14))
+                    .on_press(Message::SortOrderChanged(
+                        if self.sort_order == SortOrder::LastActiveAsc {
+                            SortOrder::LastActiveDesc
+                        } else {
+                            SortOrder::LastActiveAsc
+                        }
+                    ))
+                    .style(if matches!(self.sort_order, SortOrder::LastActiveAsc | SortOrder::LastActiveDesc) {
+                        button::primary
                     } else {
-                        SortOrder::LastActiveAsc
-                    }
-                ))
-                .style(if matches!(self.sort_order, SortOrder::LastActiveAsc | SortOrder::LastActiveDesc) {
-                    button::primary
-                } else {
-                    button::secondary
-                }),
-        ].spacing(10);
+                        button::secondary
+                    }),
+            ].spacing(10)
+        ).padding(15)
+        .style(style::panel_content);
 
-        let mut agent_list = column![header, search_bar, sort_controls].spacing(10);
+        let mut agent_list = column![header, search_bar, sort_controls].spacing(15);
 
         // Filter and sort agents
         let mut filtered_agents: Vec<_> = self.agents.iter()
@@ -660,26 +663,32 @@ impl Example {
             agent_list = agent_list.push(agent_row);
         }
 
+        let agent_list_container = container(agent_list)
+            .padding(15)
+            .style(style::panel_content);
+
         let logs_section = container(
             column![
-                Text::new("System Logs").size(16),
+                Text::new("System Logs").size(16).style(style::header_text),
                 scrollable(
                     column(Vec::from_iter(
                         self.logs.iter()
                             .map(|log| Text::new(log.clone()).size(12).into())
                             .collect::<Vec<_>>()
                     ))
-                ).height(Length::Fixed(100.0))
+                ).height(Length::Fixed(150.0))
             ]
-        ).padding(10);
+        ).padding(15)
+        .style(style::panel_content);
 
         let refresh_button = button("Refresh")
             .on_press(Message::RefreshAgents)
-            .padding(10);
+            .padding(10)
+            .style(button::primary);
 
         container(
             column![
-                agent_list,
+                agent_list_container,
                 logs_section,
                 refresh_button,
             ]
@@ -734,56 +743,58 @@ impl Example {
                     .padding(10)
                 ).style(style::panel_content);
 
-                let config_form = column![
-                    Text::new("Agent Configuration").size(16),
-                    row![
-                        Text::new("Max Concurrent Tasks: ").size(14),
-                        text_input(
-                            "4",
-                            &self.config_state.max_concurrent_tasks,
-                        )
-                        .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateMaxTasks(value)))
-                        .padding(5)
-                    ],
-                    row![
-                        Text::new("Priority Threshold: ").size(14),
-                        text_input(
-                            "0",
-                            &self.config_state.priority_threshold,
-                        )
-                        .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdatePriority(value)))
-                        .padding(5)
-                    ],
-                    row![
-                        Text::new("LLM Provider: ").size(14),
-                        text_input(
-                            "LMStudio",
-                            &self.config_state.llm_provider,
-                        )
-                        .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateProvider(value)))
-                        .padding(5)
-                    ],
-                    row![
-                        Text::new("LLM Model: ").size(14),
-                        text_input(
-                            "default",
-                            &self.config_state.llm_model,
-                        )
-                        .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateModel(value)))
-                        .padding(5)
-                    ],
-                    row![
-                        Text::new("Timeout (seconds): ").size(14),
-                        text_input(
-                            "30",
-                            &self.config_state.timeout_seconds,
-                        )
-                        .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateTimeout(value)))
-                        .padding(5)
-                    ],
-                ]
-                .spacing(10)
-                .padding(10);
+                let config_form = container(
+                    column![
+                        Text::new("Agent Configuration").size(16).style(style::header_text),
+                        row![
+                            Text::new("Max Concurrent Tasks: ").size(14),
+                            text_input(
+                                "4",
+                                &self.config_state.max_concurrent_tasks,
+                            )
+                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateMaxTasks(value)))
+                            .padding(5)
+                        ],
+                        row![
+                            Text::new("Priority Threshold: ").size(14),
+                            text_input(
+                                "0",
+                                &self.config_state.priority_threshold,
+                            )
+                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdatePriority(value)))
+                            .padding(5)
+                        ],
+                        row![
+                            Text::new("LLM Provider: ").size(14),
+                            text_input(
+                                "LMStudio",
+                                &self.config_state.llm_provider,
+                            )
+                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateProvider(value)))
+                            .padding(5)
+                        ],
+                        row![
+                            Text::new("LLM Model: ").size(14),
+                            text_input(
+                                "default",
+                                &self.config_state.llm_model,
+                            )
+                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateModel(value)))
+                            .padding(5)
+                        ],
+                        row![
+                            Text::new("Timeout (seconds): ").size(14),
+                            text_input(
+                                "30",
+                                &self.config_state.timeout_seconds,
+                            )
+                            .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateTimeout(value)))
+                            .padding(5)
+                        ],
+                    ]
+                    .spacing(10)
+                    .padding(10)
+                ).style(style::panel_content);
 
                 let logs = self.logs.iter()
                     .filter(|log| log.contains(&agent.id))
