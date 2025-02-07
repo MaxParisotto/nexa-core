@@ -3,26 +3,32 @@ use log::debug;
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
     button, column, container, row, scrollable, text, Text, Row,
-};  
-use iced::{Element, Length, Size, Subscription};
+    text_input,
+};
+use iced::{Element, Length, Size, Subscription, Task};
 use crate::models::agent::Agent;
-
-use iced::Task;
-use iced::widget::text_input;
+use crate::cli::AgentConfig;
+use iced::Theme;
 use std::time::Duration;
 use iced::time;
+
+// Constants for UI configuration
+const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const LOG_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_LOGS: usize = 1000;
+const DEFAULT_WINDOW_SIZE: Size = Size::new(1920.0, 1080.0);
 
 pub fn main() -> iced::Result {
     let example = Example::new().0;
     iced::application(example.title(), Example::update, Example::view)
         .subscription(Example::subscription)
-        .window_size(Size::new(1920.0, 1080.0))
+        .window_size(DEFAULT_WINDOW_SIZE)
         .theme(|_| iced::Theme::Light)
         .run()
 }
 
 #[derive(Debug, Clone)]
-enum View {
+pub enum View {
     Agents,
     Settings,
     Logs,
@@ -46,12 +52,12 @@ struct LLMServerConfig {
 }
 
 #[derive(Debug, Clone)]
-struct LLMModel {
-    name: String,
-    size: String,
-    context_length: usize,
-    quantization: Option<String>,
-    description: String,
+pub struct LLMModel {
+    pub name: String,
+    pub size: String,
+    pub context_length: usize,
+    pub quantization: Option<String>,
+    pub description: String,
 }
 
 struct Example {
@@ -71,8 +77,8 @@ struct Example {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-enum Message {
+pub enum Message {
+    // Layout Messages
     Split(pane_grid::Axis, pane_grid::Pane),
     SplitFocused(pane_grid::Axis),
     FocusAdjacent(pane_grid::Direction),
@@ -84,32 +90,72 @@ enum Message {
     Restore,
     Close(pane_grid::Pane),
     CloseFocused,
+    
+    // CLI Messages
     CliStart,
     CliStop,
     CliStatus,
+    
+    // Agent Management
     RefreshAgents,
     StartAgent(String),
     StopAgent(String),
     ViewAgentDetails(String),
-    ConnectLLM(String),
-    DisconnectLLM(String),
     AgentsUpdated(Vec<Agent>),
-    UpdateAgentConfig(String, crate::cli::AgentConfig),
-    ShowLogs(String),
-    ClearLogs,
+    UpdateAgentConfig(String, AgentConfig),
+    
+    // Configuration
+    UpdateConfig(ConfigMessage),
+    SaveConfig(String),
     ConfigUpdate(ConfigMessage),
-    Batch(Vec<Message>),
+    
+    // UI State
+    ChangeView(View),
+    UpdateSearch(String),
+    UpdateSort(SortOrder),
     SearchQueryChanged(String),
     SortOrderChanged(SortOrder),
-    AddLLMServer(String, String),
+    
+    // LLM Management
+    AddLLMServer(String, String),  // (url, provider)
     RemoveLLMServer(String),
+    ConnectLLM(String),
+    DisconnectLLM(String),
     ConnectToLLM(String),
     DisconnectFromLLM(String),
-    SelectModel(String, String),
     UpdateNewServerUrl(String),
     UpdateNewServerProvider(String),
+    SelectModel(String, String),
     ModelsLoaded(String, Vec<LLMModel>),
-    ChangeView(View),
+    
+    // System
+    ShowLog(String),
+    ShowLogs(String),
+    ClearLogs,
+    Batch(Vec<Message>),
+}
+
+// New helper types for better code organization
+#[derive(Debug, Clone)]
+pub enum AgentAction {
+    Start(String),
+    Stop(String),
+    Update(String, AgentConfig),
+}
+
+#[derive(Debug, Clone)]
+pub enum LLMAction {
+    Connect { provider: String, url: String },
+    Disconnect(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum ConfigUpdate {
+    MaxTasks(u32),
+    Priority(u32),
+    Provider(String),
+    Model(String),
+    Timeout(u32),
 }
 
 impl Example {
@@ -538,6 +584,29 @@ impl Example {
                 self.current_view = view;
                 Task::none()
             }
+            Message::UpdateConfig(_config) => {
+                // Handle config update
+                Task::none()
+            }
+            Message::SaveConfig(_id) => {
+                // Handle config save
+                Task::none()
+            }
+            Message::UpdateSearch(query) => {
+                self.search_query = query;
+                Task::none()
+            }
+            Message::UpdateSort(order) => {
+                self.sort_order = order;
+                Task::none()
+            }
+            Message::ShowLog(log) => {
+                self.logs.push(log);
+                if self.logs.len() > MAX_LOGS {
+                    self.logs.drain(0..self.logs.len() - MAX_LOGS);
+                }
+                Task::none()
+            }
         }
     }
 
@@ -600,14 +669,14 @@ impl Example {
                 }
                 handle_hotkey(key_code)
             }),
-            time::every(Duration::from_secs(5))
+            time::every(REFRESH_INTERVAL)
                 .map(|_| Message::RefreshAgents),
             self.log_subscription(),
         ])
     }
 
     fn log_subscription(&self) -> Subscription<Message> {
-        time::every(Duration::from_secs(1))
+        time::every(LOG_CHECK_INTERVAL)
             .map(|_| {
                 let now = std::time::Instant::now();
                 Message::ShowLogs(format!("System check at: {:?}", now))
@@ -1183,7 +1252,7 @@ impl Default for AgentConfigState {
 }
 
 #[derive(Debug, Clone)]
-enum ConfigMessage {
+pub enum ConfigMessage {
     UpdateMaxTasks(String),
     UpdatePriority(String),
     UpdateProvider(String),
@@ -1236,122 +1305,141 @@ impl Pane {
 }
 
 mod style {
+    use super::*;
+    use iced::{Border, Color, Shadow};
     use iced::widget::container;
-    use iced::{Border, Theme, Color, Shadow};
     use crate::models::agent::AgentStatus;
 
-    // Modern color palette with better contrast
-    fn get_theme_colors(_theme: &Theme) -> (Color, Color, Color, Color, Color) {
-        (
-            Color::from_rgb(0.98, 0.99, 1.00),    // Background
-            Color::from_rgb(0.95, 0.97, 0.99),    // Secondary Background
-            Color::from_rgb(0.90, 0.92, 0.95),    // Border
-            Color::from_rgb(0.15, 0.18, 0.20),    // Text
-            Color::from_rgb(0.35, 0.53, 0.90),    // Accent
-        )
+    // Modern color palette with semantic naming
+    pub struct ThemeColors {
+        pub background: Color,
+        pub surface: Color,
+        pub border: Color,
+        pub text: Color,
     }
 
-    pub fn dock_item(theme: &Theme) -> container::Style {
-        let (_, _, border_color, _, accent) = get_theme_colors(theme);
+    impl ThemeColors {
+        pub fn light() -> Self {
+            Self {
+                background: Color::from_rgb(0.98, 0.99, 1.00),
+                surface: Color::from_rgb(1.0, 1.0, 1.0),
+                border: Color::from_rgb(0.90, 0.92, 0.95),
+                text: Color::from_rgb(0.15, 0.18, 0.20),
+            }
+        }
+    }
+
+    // Reusable shadow definitions
+    pub struct Shadows {
+        pub small: Shadow,
+        pub medium: Shadow,
+        pub large: Shadow,
+    }
+
+    impl Shadows {
+        pub fn new() -> Self {
+            Self {
+                small: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.08),
+                    offset: iced::Vector::new(0.0, 2.0),
+                    blur_radius: 8.0,
+                },
+                medium: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.12),
+                    offset: iced::Vector::new(0.0, 4.0),
+                    blur_radius: 16.0,
+                },
+                large: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.16),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+            }
+        }
+    }
+
+    // New component-specific styles
+    pub fn dock_item(_theme: &Theme) -> container::Style {
+        let colors = ThemeColors::light();
         
         container::Style {
-            background: Some(Color::from_rgb(1.0, 1.0, 1.0).into()),
+            background: Some(colors.surface.into()),
             border: Border {
                 width: 1.0,
-                color: border_color,
+                color: colors.border,
                 radius: (12.0).into(),
             },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.08),
-                offset: iced::Vector::new(0.0, 4.0),
-                blur_radius: 15.0,
-            },
-            text_color: Some(accent),
+            shadow: Shadows::new().medium,
+            text_color: Some(colors.text),
             ..Default::default()
         }
     }
 
-    pub fn dock(theme: &Theme) -> container::Style {
-        let (_, _, border_color, _, _) = get_theme_colors(theme);
+    pub fn dock(_theme: &Theme) -> container::Style {
+        let colors = ThemeColors::light();
         
         container::Style {
-            background: Some(Color::from_rgba(0.98, 0.98, 0.98, 0.85).into()),
+            background: Some(colors.surface.into()),
             border: Border {
                 width: 1.0,
-                color: border_color,
+                color: colors.border,
                 radius: (20.0).into(),
             },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
-                offset: iced::Vector::new(0.0, 8.0),
-                blur_radius: 20.0,
-            },
+            shadow: Shadows::new().large,
             ..Default::default()
         }
     }
 
-    pub fn main_container(theme: &Theme) -> container::Style {
-        let (background, _, border_color, _, _) = get_theme_colors(theme);
+    pub fn main_container(_theme: &Theme) -> container::Style {
+        let colors = ThemeColors::light();
         
         container::Style {
-            background: Some(background.into()),
+            background: Some(colors.background.into()),
             border: Border {
                 width: 1.0,
-                color: border_color,
+                color: colors.border,
                 radius: (16.0).into(),
             },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.06),
-                offset: iced::Vector::new(0.0, 6.0),
-                blur_radius: 25.0,
-            },
+            shadow: Shadows::new().medium,
             ..Default::default()
         }
     }
 
-    pub fn header_text(theme: &Theme) -> iced::widget::text::Style {
-        let (_, _, _, text_color, _) = get_theme_colors(theme);
+    pub fn header_text(_theme: &Theme) -> iced::widget::text::Style {
+        let colors = ThemeColors::light();
         
         iced::widget::text::Style {
-            color: Some(text_color),
+            color: Some(colors.text),
             ..Default::default()
         }
     }
 
-    pub fn panel_content(theme: &Theme) -> container::Style {
-        let (_, _, border_color, _, _) = get_theme_colors(theme);
+    pub fn panel_content(_theme: &Theme) -> container::Style {
+        let colors = ThemeColors::light();
 
         container::Style {
-            background: Some(Color::from_rgb(1.0, 1.0, 1.0).into()),
+            background: Some(colors.surface.into()),
             border: Border {
                 width: 1.0,
-                color: border_color,
+                color: colors.border,
                 radius: (12.0).into(),
             },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.04),
-                offset: iced::Vector::new(0.0, 4.0),
-                blur_radius: 12.0,
-            },
+            shadow: Shadows::new().small,
             ..Default::default()
         }
     }
 
-    pub fn search_bar(theme: &Theme) -> container::Style {
-        let (_, background, border_color, _, _) = get_theme_colors(theme);
+    pub fn search_bar(_theme: &Theme) -> container::Style {
+        let colors = ThemeColors::light();
 
         container::Style {
-            background: Some(background.into()),
+            background: Some(colors.surface.into()),
             border: Border {
                 width: 1.0,
-                color: border_color,
+                color: colors.border,
                 radius: (10.0).into(),
             },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.03),
-                offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: 8.0,
-            },
+            shadow: Shadows::new().small,
             ..Default::default()
         }
     }
@@ -1382,7 +1470,7 @@ mod style {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum SortOrder {
+pub enum SortOrder {
     NameAsc,
     NameDesc,
     StatusAsc,
