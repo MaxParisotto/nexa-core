@@ -12,6 +12,7 @@ pub mod server;
 pub mod tokens;
 pub mod utils;
 pub mod types;
+pub mod settings;
 
 // Re-export commonly used types
 pub use models::agent::{Agent, Task, AgentStatus, TaskStatus};

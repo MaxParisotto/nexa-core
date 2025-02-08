@@ -1,13 +1,8 @@
 use iced::widget::{button, column, container, row, text_input, Text};
 use iced::Element;
 use crate::cli::LLMModel;
+use crate::settings::LLMServerConfig;
 use crate::gui::components::{common, styles};
-
-#[derive(Debug, Clone)]
-pub struct LLMServerConfig {
-    pub provider: String,
-    pub url: String,
-}
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {

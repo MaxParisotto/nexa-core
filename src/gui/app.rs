@@ -3,16 +3,17 @@ use log::debug;
 use iced::widget::{
     column, container, Text, Row, button,
 };
-use iced::{Element, Length, Size, Subscription, Task};
-use crate::models::agent::Agent;
+use iced::{Element, Length, Size, Subscription, Task as IcedTask};
+use crate::models::agent::{Agent, Task as AgentTask};
 use crate::cli::{AgentConfig, LLMModel};
-use std::time::Duration;
-
+use crate::gui::components::dashboard::DashboardMetrics;
+use crate::settings::{SettingsManager, LLMServerConfig};
+use crate::server::ServerMetrics;
 use crate::gui::components::{
-    agents, workflows, tasks, settings, logs, styles,
+    agents, workflows, tasks, settings, logs, styles, dashboard,
 };
 use crate::gui::components::agents::AgentConfigState;
-use crate::gui::components::settings::LLMServerConfig;
+use std::time::Duration;
 
 // Constants for UI configuration
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -31,6 +32,7 @@ pub fn main() -> iced::Result {
 /// Navigation views
 #[derive(Debug, Clone)]
 pub enum View {
+    Dashboard,
     Agents,
     Settings,
     Logs,
@@ -40,19 +42,31 @@ pub enum View {
 
 /// LLM settings state
 #[derive(Debug, Clone)]
-struct LLMSettingsState {
-    servers: Vec<LLMServerConfig>,
-    available_models: Vec<LLMModel>,
-    new_server_url: String,
-    new_server_provider: String,
+pub struct LLMSettingsState {
+    pub servers: Vec<LLMServerConfig>,
+    pub available_models: Vec<LLMModel>,
+    pub new_server_url: String,
+    pub new_server_provider: String,
+}
+
+impl Default for LLMSettingsState {
+    fn default() -> Self {
+        Self {
+            servers: Vec::new(),
+            available_models: Vec::new(),
+            new_server_url: String::new(),
+            new_server_provider: String::new(),
+        }
+    }
 }
 
 /// Dock item for navigation
 #[derive(Debug, Clone)]
-struct DockItem {
-    name: String,
-    icon: String,
-    action: Message,
+pub struct DockItem {
+    pub name: String,
+    pub icon: String,
+    pub action: Message,
+    pub shortcut: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +103,7 @@ pub struct Example {
     #[allow(dead_code)]
     cli_handler: std::sync::Arc<crate::cli::CliHandler>,
     current_view: View,
+    settings_manager: SettingsManager,
     
     // Component states
     agents: Vec<Agent>,
@@ -97,6 +112,8 @@ pub struct Example {
     config_state: AgentConfigState,
     llm_settings: LLMSettingsState,
     dock_items: Vec<DockItem>,
+    tasks: Vec<AgentTask>,
+    server_metrics: ServerMetrics,
 }
 
 /// Application messages
@@ -141,53 +158,69 @@ pub enum AgentControlAction {
 }
 
 impl Example {
-    fn new() -> (Self, Task<Message>) {
-        // Define default dock items
+    fn new() -> (Self, IcedTask<Message>) {
+        let settings_manager = SettingsManager::new();
+        let settings = settings_manager.get().clone();
+
         let dock_items = vec![
+            DockItem {
+                name: "Dashboard".to_string(),
+                icon: "📊".to_string(),
+                action: Message::ChangeView(View::Dashboard),
+                shortcut: Some("Ctrl+D".to_string()),
+            },
             DockItem {
                 name: "Agents".to_string(),
                 icon: "👥".to_string(),
                 action: Message::ChangeView(View::Agents),
+                shortcut: Some("Ctrl+A".to_string()),
             },
             DockItem {
                 name: "Settings".to_string(),
                 icon: "⚙️".to_string(),
                 action: Message::ChangeView(View::Settings),
+                shortcut: Some("Ctrl+S".to_string()),
             },
             DockItem {
                 name: "Logs".to_string(),
                 icon: "📝".to_string(),
                 action: Message::ChangeView(View::Logs),
+                shortcut: Some("Ctrl+L".to_string()),
             },
             DockItem {
                 name: "Workflows".to_string(),
                 icon: "🔄".to_string(),
                 action: Message::ChangeView(View::Workflows),
+                shortcut: Some("Ctrl+W".to_string()),
             },
             DockItem {
                 name: "Tasks".to_string(),
                 icon: "✅".to_string(),
                 action: Message::ChangeView(View::Tasks),
+                shortcut: Some("Ctrl+T".to_string()),
             },
         ];
 
         (
             Example {
                 cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
-                current_view: View::Agents,
+                current_view: View::Dashboard,
+                settings_manager,
                 agents: Vec::new(),
                 selected_agent: None,
                 logs: Vec::new(),
                 config_state: AgentConfigState::default(),
                 llm_settings: LLMSettingsState {
-                    servers: Vec::new(),
+                    servers: settings.llm_servers,
                     available_models: Vec::new(),
                     new_server_url: String::new(),
                     new_server_provider: String::new(),
                 },
                 dock_items,
+                tasks: Vec::new(),
+                server_metrics: ServerMetrics::new(),
             },
-            Task::none(),
+            IcedTask::none(),
         )
     }
 
@@ -195,112 +228,125 @@ impl Example {
         "Nexa Agent Management"
     }
 
-    fn update(&mut self, message: Message) -> Task<Message> {
+    fn update(&mut self, message: Message) -> IcedTask<Message> {
         match message {
             Message::AgentMessage(msg) => {
                 match msg {
                     agents::AgentMessage::ViewDetails(id) => {
                         self.selected_agent = Some(id);
-                        Task::none()
+                        IcedTask::none()
                     }
                     agents::AgentMessage::Back => {
                         self.selected_agent = None;
-                        Task::none()
+                        IcedTask::none()
                     }
                     agents::AgentMessage::Start(id) => {
                         if let Some(_agent) = self.agents.iter_mut().find(|a| a.id == id) {
                             // Update agent status
                             debug!("Starting agent {}", id);
                         }
-                        Task::none()
+                        IcedTask::none()
                     }
                     agents::AgentMessage::Stop(id) => {
                         if let Some(_agent) = self.agents.iter_mut().find(|a| a.id == id) {
                             // Update agent status
                             debug!("Stopping agent {}", id);
                         }
-                        Task::none()
+                        IcedTask::none()
                     }
-                    _ => Task::none()
+                    _ => IcedTask::none()
                 }
             }
             Message::WorkflowMessage(msg) => {
                 match msg {
                     workflows::WorkflowMessage::ViewDetails(id) => {
                         debug!("Viewing workflow details {}", id);
-                        Task::none()
+                        IcedTask::none()
                     }
                     workflows::WorkflowMessage::Execute(id) => {
                         debug!("Executing workflow {}", id);
-                        Task::none()
+                        IcedTask::none()
                     }
-                    _ => Task::none()
+                    _ => IcedTask::none()
                 }
             }
             Message::TaskMessage(msg) => {
                 match msg {
                     tasks::TaskMessage::ViewDetails(id) => {
                         debug!("Viewing task details {}", id);
-                        Task::none()
+                        IcedTask::none()
                     }
                     tasks::TaskMessage::UpdateStatus(id, status) => {
                         debug!("Updating task {} status to {:?}", id, status);
-                        Task::none()
+                        IcedTask::none()
                     }
-                    _ => Task::none()
+                    _ => IcedTask::none()
                 }
             }
             Message::SettingsMessage(msg) => {
                 match msg {
                     settings::SettingsMessage::AddServer(url, provider) => {
-                        self.llm_settings.servers.push(LLMServerConfig {
-                            url,
-                            provider,
+                        let server_config = LLMServerConfig {
+                            provider: provider.clone(),
+                            url: url.clone(),
+                            models: Vec::new(),
+                        };
+                        self.llm_settings.servers.push(server_config.clone());
+                        
+                        // Update persistent settings
+                        let _ = self.settings_manager.update(|settings| {
+                            settings.llm_servers.push(server_config);
                         });
+
                         self.llm_settings.new_server_url.clear();
                         self.llm_settings.new_server_provider.clear();
-                        Task::none()
+                        IcedTask::none()
                     }
                     settings::SettingsMessage::RemoveServer(provider) => {
                         self.llm_settings.servers.retain(|s| s.provider != provider);
-                        Task::none()
+                        
+                        // Update persistent settings
+                        let _ = self.settings_manager.update(|settings| {
+                            settings.llm_servers.retain(|s| s.provider != provider);
+                        });
+                        IcedTask::none()
                     }
                     settings::SettingsMessage::UpdateNewServerUrl(url) => {
                         self.llm_settings.new_server_url = url;
-                        Task::none()
+                        IcedTask::none()
                     }
                     settings::SettingsMessage::UpdateNewServerProvider(provider) => {
                         self.llm_settings.new_server_provider = provider;
-                        Task::none()
+                        IcedTask::none()
                     }
-                    _ => Task::none()
+                    _ => IcedTask::none()
                 }
             }
             Message::LogMessage(msg) => {
                 match msg {
                     logs::LogMessage::Clear => {
                         self.logs.clear();
-                        Task::none()
+                        IcedTask::none()
                     }
                     logs::LogMessage::Show(log) => {
                         self.logs.push(log);
                         if self.logs.len() > MAX_LOGS {
                             self.logs.remove(0);
                         }
-                        Task::none()
+                        IcedTask::none()
                     }
                 }
             }
             Message::ChangeView(view) => {
                 self.current_view = view;
-                Task::none()
+                IcedTask::none()
             }
             Message::Tick => {
                 // Periodic updates
-                Task::none()
+                IcedTask::none()
             }
             Message::Batch(messages) => {
-                let mut last_task = Task::none();
+                let mut last_task = IcedTask::none();
                 for message in messages {
                     last_task = self.update(message);
                 }
@@ -312,6 +358,10 @@ impl Example {
     fn view(&self) -> Element<Message> {
         let dock = self.view_dock();
         let content = match self.current_view {
+            View::Dashboard => {
+                let metrics = self.get_metrics();
+                dashboard::view_dashboard(metrics)
+            }
             View::Agents => {
                 if let Some(agent_id) = &self.selected_agent {
                     if let Some(agent) = self.agents.iter().find(|a| &a.id == agent_id) {
@@ -421,6 +471,7 @@ impl Example {
             keyboard::on_key_press(|key: keyboard::Key, _modifiers: keyboard::Modifiers| {
                 match key {
                     keyboard::Key::Character(c) => match c.as_str() {
+                        "d" => Some(Message::ChangeView(View::Dashboard)),
                         "a" => Some(Message::ChangeView(View::Agents)),
                         "s" => Some(Message::ChangeView(View::Settings)),
                         "l" => Some(Message::ChangeView(View::Logs)),
@@ -434,6 +485,16 @@ impl Example {
             iced::time::every(REFRESH_INTERVAL)
                 .map(|_| Message::Tick),
         ])
+    }
+
+    fn get_metrics(&self) -> DashboardMetrics {
+        DashboardMetrics::from_state(
+            &self.agents,
+            &self.server_metrics,
+            &self.llm_settings.servers,
+            &self.llm_settings.available_models,
+            &self.tasks
+        )
     }
 }
 

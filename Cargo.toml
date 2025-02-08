@@ -20,8 +20,8 @@ log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5.27", features = ["derive"] }
 iced = { version = "0.13.1", features = ["tokio", "debug", "advanced", "async-std"] }
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = "1.0.138"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_yaml = "0.9"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 thiserror = "2.0.11"
@@ -43,6 +43,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 directories = "6.0.0"
 async-std = { version = "1.12", features = ["attributes"] }
+dirs = "5.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 reqwest = { version = "0.12.12", default-features = false, features = ["native-tls", "json"] }
