@@ -1,9 +1,9 @@
 use std::time::Duration;
-use iced::widget::{container, Column, Row, Text};
-use iced::Element;
+use iced::widget::{container, Column, Row, Text, button};
+use iced::{Element, Length, theme};
 use crate::models::agent::{Agent, TaskStatus};
 use crate::cli::LLMModel;
-use crate::server::ServerMetrics;
+use crate::server::{ServerMetrics, ServerState};
 use crate::settings::LLMServerConfig;
 use crate::gui::components::{common, styles};
 use crate::gui::app::Message;
@@ -111,6 +111,28 @@ impl DashboardMetrics {
 }
 
 pub fn view_dashboard<'a>(metrics: DashboardMetrics) -> Element<'a, Message> {
+    let server_control = container(
+        Column::new()
+            .push(Text::new("Server Control").size(24))
+            .push(
+                Row::new()
+                    .push(
+                        common::primary_button("Start Server", 16)
+                            .on_press(Message::StartServer)
+                            .width(Length::Fixed(150.0))
+                    )
+                    .push(
+                        common::danger_button("Stop Server", 16)
+                            .on_press(Message::StopServer)
+                            .width(Length::Fixed(150.0))
+                    )
+                    .spacing(20)
+                    .padding(10)
+            )
+            .spacing(10)
+    )
+    .style(styles::panel_content);
+
     let server_metrics = container(
         Column::new()
             .push(Text::new("Server Metrics").size(24))
@@ -186,6 +208,7 @@ pub fn view_dashboard<'a>(metrics: DashboardMetrics) -> Element<'a, Message> {
     container(
         Column::new()
             .push(common::header("System Dashboard"))
+            .push(server_control)
             .push(server_metrics)
             .push(agent_metrics)
             .push(task_metrics)

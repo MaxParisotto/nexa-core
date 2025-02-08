@@ -1,4 +1,4 @@
-use iced::widget::{column, container, Text};
+use iced::widget::{column, container, scrollable, Text};
 use iced::Element;
 use super::{common, styles};
 use crate::gui::app::Message;
@@ -19,21 +19,32 @@ pub fn view_logs_panel<'a>(logs: &'a [String]) -> Element<'a, Message> {
     .style(styles::panel_content);
 
     let logs_list = container(
-        column(
-            logs.iter().map(|log| {
-                container(
-                    Text::new(log).size(14)
-                )
-                .into()
-            }).collect::<Vec<Element<'a, Message>>>()
+        scrollable(
+            column(
+                logs.iter().map(|log| {
+                    container(
+                        Text::new(log)
+                            .size(14)
+                            .style(styles::header_text)
+                    )
+                    .padding(5)
+                    .width(iced::Length::Fill)
+                    .style(styles::panel_content)
+                    .into()
+                }).collect::<Vec<Element<'a, Message>>>()
+            )
+            .spacing(5)
+            .width(iced::Length::Fill)
         )
-        .spacing(5)
+        .height(iced::Length::Fill)
     )
+    .height(iced::Length::Fill)
     .padding(10)
     .style(styles::panel_content);
 
-    let clear_button = common::primary_button("Clear", 14)
-        .on_press(Message::LogMessage(LogMessage::Clear));
+    let clear_button = common::primary_button("Clear Logs", 14)
+        .on_press(Message::LogMessage(LogMessage::Clear))
+        .width(iced::Length::Fill);
 
     container(
         column![
@@ -42,8 +53,10 @@ pub fn view_logs_panel<'a>(logs: &'a [String]) -> Element<'a, Message> {
             clear_button
         ]
         .spacing(20)
+        .height(iced::Length::Fill)
     )
     .padding(20)
+    .height(iced::Length::Fill)
     .style(styles::panel_content)
     .into()
 } 

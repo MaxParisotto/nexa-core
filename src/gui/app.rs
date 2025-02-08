@@ -8,15 +8,17 @@ use crate::models::agent::{Agent, Task as AgentTask};
 use crate::cli::{AgentConfig, LLMModel};
 use crate::gui::components::dashboard::DashboardMetrics;
 use crate::settings::{SettingsManager, LLMServerConfig};
-use crate::server::ServerMetrics;
+use crate::server::{ServerMetrics, ServerState};
 use crate::gui::components::{
     agents, workflows, tasks, settings, logs, styles, dashboard,
 };
 use crate::gui::components::agents::AgentConfigState;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use crate::logging;
 
 // Constants for UI configuration
-const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DEFAULT_WINDOW_SIZE: Size = Size::new(1920.0, 1080.0);
 const MAX_LOGS: usize = 1000;
 
@@ -114,6 +116,9 @@ pub struct Example {
     dock_items: Vec<DockItem>,
     tasks: Vec<AgentTask>,
     server_metrics: ServerMetrics,
+    
+    // Channels
+    _log_receiver: mpsc::UnboundedReceiver<String>,
 }
 
 /// Application messages
@@ -135,6 +140,14 @@ pub enum Message {
     UpdateServerMetrics(ServerMetrics),
     UpdateAgents(Vec<Agent>),
     UpdateModels(Vec<LLMModel>),
+    
+    // Server Control
+    StartServer,
+    StopServer,
+    ServerStateChanged(ServerState),
+    
+    // Logging
+    LogReceived(String),
 }
 
 // New helper types for better code organization
@@ -164,6 +177,13 @@ impl Example {
     fn new() -> (Self, IcedTask<Message>) {
         let settings_manager = SettingsManager::new();
         let settings = settings_manager.get().clone();
+
+        // Set up logging channel
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        logging::set_ui_sender(log_sender.clone());
+        
+        // Send initial log
+        let _ = log_sender.send("Nexa UI started. Initializing components...".to_string());
 
         let dock_items = vec![
             DockItem {
@@ -222,6 +242,7 @@ impl Example {
                 dock_items,
                 tasks: Vec::new(),
                 server_metrics: ServerMetrics::new(),
+                _log_receiver: log_receiver,
             },
             IcedTask::none(),
         )
@@ -232,6 +253,8 @@ impl Example {
     }
 
     fn update(&mut self, message: Message) -> IcedTask<Message> {
+        debug!("Handling message: {:?}", message);
+        
         match message {
             Message::AgentMessage(msg) => {
                 match msg {
@@ -328,10 +351,12 @@ impl Example {
             Message::LogMessage(msg) => {
                 match msg {
                     logs::LogMessage::Clear => {
+                        debug!("Clearing logs from UI");
                         self.logs.clear();
                         IcedTask::none()
                     }
                     logs::LogMessage::Show(log) => {
+                        debug!("Adding log to UI: {}", log);
                         self.logs.push(log);
                         if self.logs.len() > MAX_LOGS {
                             self.logs.remove(0);
@@ -340,42 +365,41 @@ impl Example {
                     }
                 }
             }
+            Message::LogReceived(log) => {
+                self.logs.push(log);
+                if self.logs.len() > self.settings_manager.get().max_logs {
+                    self.logs.remove(0);
+                }
+                IcedTask::none()
+            }
             Message::ChangeView(view) => {
+                debug!("Changing view to: {:?}", view);
                 self.current_view = view;
                 IcedTask::none()
             }
             Message::Tick => {
-                let cli_handler = self.cli_handler.clone();
-                let servers = self.llm_settings.servers.clone();
+                // Try to receive any pending log messages
+                while let Ok(log) = self._log_receiver.try_recv() {
+                    self.logs.push(log);
+                    if self.logs.len() > self.settings_manager.get().max_logs {
+                        self.logs.remove(0);
+                    }
+                }
                 
+                // Update metrics periodically
+                let cli = self.cli_handler.clone();
                 IcedTask::perform(
                     async move {
-                        let mut messages = Vec::new();
-                        
-                        // Update server metrics
-                        let metrics = cli_handler.get_server().get_metrics().await;
-                        messages.push(Message::UpdateServerMetrics(metrics));
-                        
-                        // Update agents list
-                        if let Ok(cli_agents) = cli_handler.list_agents(None).await {
-                            let agents = cli_agents.into_iter()
-                                .map(Agent::from_cli_agent)
-                                .collect();
-                            messages.push(Message::UpdateAgents(agents));
-                        }
-                        
-                        // Update LLM models for each server
-                        let mut all_models = Vec::new();
-                        for server in servers {
-                            if let Ok(models) = cli_handler.list_models(&server.provider).await {
-                                all_models.extend(models);
-                            }
-                        }
-                        messages.push(Message::UpdateModels(all_models));
-                        
-                        Message::Batch(messages)
+                        let metrics = cli.get_server().get_metrics().await;
+                        Ok::<ServerMetrics, String>(metrics)
                     },
-                    |result| result
+                    |result| match result {
+                        Ok(metrics) => Message::UpdateServerMetrics(metrics),
+                        Err(e) => {
+                            debug!("Failed to update metrics: {}", e);
+                            Message::LogReceived(format!("Error updating metrics: {}", e))
+                        }
+                    }
                 )
             }
             Message::UpdateServerMetrics(metrics) => {
@@ -391,23 +415,30 @@ impl Example {
                 IcedTask::none()
             }
             Message::Batch(messages) => {
-                // Process each message immediately instead of chaining
                 for message in messages {
-                    match message {
-                        Message::UpdateServerMetrics(metrics) => {
-                            self.server_metrics = metrics;
-                        }
-                        Message::UpdateAgents(agents) => {
-                            self.agents = agents;
-                        }
-                        Message::UpdateModels(models) => {
-                            self.llm_settings.available_models = models;
-                        }
-                        _ => {}
+                    if let Message::UpdateServerMetrics(metrics) = message {
+                        self.server_metrics = metrics;
+                    } else if let Message::UpdateAgents(agents) = message {
+                        self.agents = agents;
+                    } else if let Message::UpdateModels(models) = message {
+                        self.llm_settings.available_models = models;
                     }
                 }
                 IcedTask::none()
             }
+            Message::StartServer => {
+                // Implementation of StartServer
+                IcedTask::none()
+            }
+            Message::StopServer => {
+                // Implementation of StopServer
+                IcedTask::none()
+            }
+            Message::ServerStateChanged(state) => {
+                // Implementation of ServerStateChanged
+                IcedTask::none()
+            }
+            _ => IcedTask::none()
         }
     }
 
@@ -538,6 +569,7 @@ impl Example {
                     _ => None,
                 }
             }),
+            // Regular tick for UI updates
             iced::time::every(REFRESH_INTERVAL)
                 .map(|_| Message::Tick),
         ])
