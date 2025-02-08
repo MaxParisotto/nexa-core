@@ -24,7 +24,7 @@ pub fn main() -> iced::Result {
     iced::application(example.title(), Example::update, Example::view)
         .subscription(Example::subscription)
         .window_size(DEFAULT_WINDOW_SIZE)
-        .theme(|_| iced::Theme::Light)
+        .theme(|_| iced::Theme::Dark)
         .run()
 }
 

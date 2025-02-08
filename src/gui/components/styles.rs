@@ -6,17 +6,23 @@ use crate::models::agent::AgentStatus;
 pub struct ThemeColors {
     pub background: Color,
     pub surface: Color,
+    pub surface_dark: Color,
     pub border: Color,
     pub text: Color,
+    pub text_secondary: Color,
+    pub accent: Color,
 }
 
 impl ThemeColors {
-    pub fn light() -> Self {
+    pub fn dark() -> Self {
         Self {
-            background: Color::from_rgb(0.98, 0.99, 1.00),
-            surface: Color::from_rgb(1.0, 1.0, 1.0),
-            border: Color::from_rgb(0.90, 0.92, 0.95),
-            text: Color::from_rgb(0.15, 0.18, 0.20),
+            background: Color::from_rgb(0.12, 0.14, 0.18), // Dark blue-gray
+            surface: Color::from_rgb(0.16, 0.18, 0.24),    // Slightly lighter blue-gray
+            surface_dark: Color::from_rgb(0.10, 0.12, 0.16), // Darker blue-gray
+            border: Color::from_rgb(0.25, 0.28, 0.32),     // Medium gray
+            text: Color::from_rgb(0.90, 0.92, 0.95),       // Light gray
+            text_secondary: Color::from_rgb(0.70, 0.72, 0.75), // Medium light gray
+            accent: Color::from_rgb(0.20, 0.50, 0.95),     // Bright blue
         }
     }
 }
@@ -51,7 +57,7 @@ impl Shadows {
 }
 
 pub fn dock_item(_theme: &Theme) -> container::Style {
-    let colors = ThemeColors::light();
+    let colors = ThemeColors::dark();
     
     container::Style {
         background: Some(colors.surface.into()),
@@ -67,10 +73,10 @@ pub fn dock_item(_theme: &Theme) -> container::Style {
 }
 
 pub fn dock(_theme: &Theme) -> container::Style {
-    let colors = ThemeColors::light();
+    let colors = ThemeColors::dark();
     
     container::Style {
-        background: Some(colors.surface.into()),
+        background: Some(colors.surface_dark.into()),
         border: Border {
             width: 1.0,
             color: colors.border,
@@ -82,7 +88,7 @@ pub fn dock(_theme: &Theme) -> container::Style {
 }
 
 pub fn main_container(_theme: &Theme) -> container::Style {
-    let colors = ThemeColors::light();
+    let colors = ThemeColors::dark();
     
     container::Style {
         background: Some(colors.background.into()),
@@ -97,7 +103,7 @@ pub fn main_container(_theme: &Theme) -> container::Style {
 }
 
 pub fn header_text(_theme: &Theme) -> text::Style {
-    let colors = ThemeColors::light();
+    let colors = ThemeColors::dark();
     
     text::Style {
         color: Some(colors.text),
@@ -106,7 +112,7 @@ pub fn header_text(_theme: &Theme) -> text::Style {
 }
 
 pub fn panel_content(_theme: &Theme) -> container::Style {
-    let colors = ThemeColors::light();
+    let colors = ThemeColors::dark();
 
     container::Style {
         background: Some(colors.surface.into()),
@@ -121,10 +127,10 @@ pub fn panel_content(_theme: &Theme) -> container::Style {
 }
 
 pub fn search_bar(_theme: &Theme) -> container::Style {
-    let colors = ThemeColors::light();
+    let colors = ThemeColors::dark();
 
     container::Style {
-        background: Some(colors.surface.into()),
+        background: Some(colors.surface_dark.into()),
         border: Border {
             width: 1.0,
             color: colors.border,
@@ -138,8 +144,8 @@ pub fn search_bar(_theme: &Theme) -> container::Style {
 pub fn status_badge_style(status: AgentStatus) -> impl Fn(&Theme) -> container::Style {
     move |_theme: &Theme| {
         let color = match status {
-            AgentStatus::Active => Color::from_rgb(0.2, 0.8, 0.4),  // Green
-            AgentStatus::Idle => Color::from_rgb(0.9, 0.7, 0.2),    // Yellow
+            AgentStatus::Active => Color::from_rgb(0.2, 0.8, 0.4),  // Bright green
+            AgentStatus::Idle => Color::from_rgb(0.9, 0.7, 0.2),    // Bright yellow
         };
 
         container::Style {
