@@ -1,6 +1,7 @@
 use iced::keyboard;
+use log::debug;
 use iced::widget::{
-    column, container, Text, Row,
+    column, container, Text, Row, button,
 };
 use iced::{Element, Length, Size, Subscription, Task};
 use crate::models::agent::Agent;
@@ -16,6 +17,7 @@ use crate::gui::components::settings::LLMServerConfig;
 // Constants for UI configuration
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_WINDOW_SIZE: Size = Size::new(1920.0, 1080.0);
+const MAX_LOGS: usize = 1000;
 
 pub fn main() -> iced::Result {
     let example = Example::new().0;
@@ -50,7 +52,6 @@ struct LLMSettingsState {
 struct DockItem {
     name: String,
     icon: String,
-    #[allow(dead_code)]
     action: Message,
 }
 
@@ -196,36 +197,109 @@ impl Example {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::AgentMessage(_msg) => {
-                // Handle agent messages
-                Task::none()
+            Message::AgentMessage(msg) => {
+                match msg {
+                    agents::AgentMessage::ViewDetails(id) => {
+                        self.selected_agent = Some(id);
+                        Task::none()
+                    }
+                    agents::AgentMessage::Back => {
+                        self.selected_agent = None;
+                        Task::none()
+                    }
+                    agents::AgentMessage::Start(id) => {
+                        if let Some(_agent) = self.agents.iter_mut().find(|a| a.id == id) {
+                            // Update agent status
+                            debug!("Starting agent {}", id);
+                        }
+                        Task::none()
+                    }
+                    agents::AgentMessage::Stop(id) => {
+                        if let Some(_agent) = self.agents.iter_mut().find(|a| a.id == id) {
+                            // Update agent status
+                            debug!("Stopping agent {}", id);
+                        }
+                        Task::none()
+                    }
+                    _ => Task::none()
+                }
             }
-            Message::WorkflowMessage(_msg) => {
-                // Handle workflow messages
-                Task::none()
+            Message::WorkflowMessage(msg) => {
+                match msg {
+                    workflows::WorkflowMessage::ViewDetails(id) => {
+                        debug!("Viewing workflow details {}", id);
+                        Task::none()
+                    }
+                    workflows::WorkflowMessage::Execute(id) => {
+                        debug!("Executing workflow {}", id);
+                        Task::none()
+                    }
+                    _ => Task::none()
+                }
             }
-            Message::TaskMessage(_msg) => {
-                // Handle task messages
-                Task::none()
+            Message::TaskMessage(msg) => {
+                match msg {
+                    tasks::TaskMessage::ViewDetails(id) => {
+                        debug!("Viewing task details {}", id);
+                        Task::none()
+                    }
+                    tasks::TaskMessage::UpdateStatus(id, status) => {
+                        debug!("Updating task {} status to {:?}", id, status);
+                        Task::none()
+                    }
+                    _ => Task::none()
+                }
             }
-            Message::SettingsMessage(_msg) => {
-                // Handle settings messages
-                Task::none()
+            Message::SettingsMessage(msg) => {
+                match msg {
+                    settings::SettingsMessage::AddServer(url, provider) => {
+                        self.llm_settings.servers.push(LLMServerConfig {
+                            url,
+                            provider,
+                        });
+                        self.llm_settings.new_server_url.clear();
+                        self.llm_settings.new_server_provider.clear();
+                        Task::none()
+                    }
+                    settings::SettingsMessage::RemoveServer(provider) => {
+                        self.llm_settings.servers.retain(|s| s.provider != provider);
+                        Task::none()
+                    }
+                    settings::SettingsMessage::UpdateNewServerUrl(url) => {
+                        self.llm_settings.new_server_url = url;
+                        Task::none()
+                    }
+                    settings::SettingsMessage::UpdateNewServerProvider(provider) => {
+                        self.llm_settings.new_server_provider = provider;
+                        Task::none()
+                    }
+                    _ => Task::none()
+                }
             }
-            Message::LogMessage(_msg) => {
-                // Handle log messages
-                Task::none()
+            Message::LogMessage(msg) => {
+                match msg {
+                    logs::LogMessage::Clear => {
+                        self.logs.clear();
+                        Task::none()
+                    }
+                    logs::LogMessage::Show(log) => {
+                        self.logs.push(log);
+                        if self.logs.len() > MAX_LOGS {
+                            self.logs.remove(0);
+                        }
+                        Task::none()
+                    }
+                }
             }
             Message::ChangeView(view) => {
                 self.current_view = view;
                 Task::none()
             }
             Message::Tick => {
-                // Handle periodic updates
+                // Periodic updates
                 Task::none()
             }
             Message::Batch(messages) => {
-                // Handle batch messages
                 let mut last_task = Task::none();
                 for message in messages {
                     last_task = self.update(message);
@@ -236,6 +310,7 @@ impl Example {
     }
 
     fn view(&self) -> Element<Message> {
+        let dock = self.view_dock();
         let content = match self.current_view {
             View::Agents => {
                 if let Some(agent_id) = &self.selected_agent {
@@ -296,12 +371,10 @@ impl Example {
             }
         };
 
-        let dock = self.view_dock();
-
         container(
             column![
-                content,
                 dock,
+                content,
             ]
             .spacing(20)
         )
@@ -312,16 +385,22 @@ impl Example {
 
     fn view_dock(&self) -> Element<Message> {
         let dock_items = self.dock_items.iter().map(|item| {
-            container(
-                column![
-                    Text::new(&item.icon).size(24),
-                    Text::new(&item.name).size(12)
-                ]
-                .spacing(5)
-                .width(Length::Fill)
+            let action = item.action.clone();
+            button(
+                container(
+                    column![
+                        Text::new(&item.icon).size(24),
+                        Text::new(&item.name).size(12)
+                    ]
+                    .spacing(5)
+                    .width(Length::Fill)
+                    .align_x(iced::Alignment::Center)
+                )
+                .padding(10)
+                .style(styles::dock_item)
             )
-            .padding(10)
-            .style(styles::dock_item)
+            .on_press(action)
+            .width(Length::Fill)
             .into()
         }).collect::<Vec<_>>();
 
@@ -329,7 +408,10 @@ impl Example {
             Row::with_children(dock_items)
                 .spacing(10)
                 .padding(10)
+                .width(Length::Fill)
+                .align_y(iced::Alignment::Center)
         )
+        .width(Length::Fill)
         .style(styles::dock)
         .into()
     }
