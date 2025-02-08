@@ -1,16 +1,23 @@
 use iced::keyboard;
 use log::debug;
-use iced::widget::pane_grid::{self, PaneGrid};
+use iced::widget::pane_grid::{self};
 use iced::widget::{
     button, column, container, row, scrollable, text, Text, Row,
     text_input,
 };
 use iced::{Element, Length, Size, Subscription, Task};
-use crate::models::agent::Agent;
-use crate::cli::{self, AgentConfig, AgentWorkflow, WorkflowStep, WorkflowStatus};
+use crate::models::agent::{Agent, AgentStatus, Task as AgentTask};
+use crate::cli::{self, AgentConfig, AgentWorkflow as Workflow, WorkflowStep, WorkflowStatus, LLMModel};
 use iced::Theme;
 use std::time::Duration;
 use iced::time;
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+use crate::gui::components::{
+    agents, workflows, tasks, settings, logs, styles,
+};
+use crate::gui::components::agents::AgentConfigState;
+use crate::gui::components::settings::LLMServerConfig;
 
 // Constants for UI configuration
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -33,6 +40,7 @@ pub enum View {
     Settings,
     Logs,
     Workflows,
+    Tasks,
 }
 
 #[derive(Debug, Clone)]
@@ -45,20 +53,31 @@ struct LLMSettingsState {
 }
 
 #[derive(Debug, Clone)]
-struct LLMServerConfig {
-    provider: String,
-    url: String,
-    is_connected: bool,
-    selected_model: Option<String>,
+pub struct TaskState {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub status: TaskStatus,
+    pub assigned_agent: Option<String>,
+    pub priority: TaskPriority,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub deadline: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Clone)]
-pub struct LLMModel {
-    pub name: String,
-    pub size: String,
-    pub context_length: usize,
-    pub quantization: Option<String>,
-    pub description: String,
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskPriority {
+    Low,
+    Medium,
+    High,
+    Critical,
 }
 
 struct Example {
@@ -75,10 +94,18 @@ struct Example {
     dock_items: Vec<DockItem>,
     llm_settings: LLMSettingsState,
     current_view: View,
-    workflows: Vec<AgentWorkflow>,
+    workflows: Vec<Workflow>,
     selected_workflow: Option<String>,
     new_workflow_name: String,
     new_workflow_steps: Vec<WorkflowStep>,
+    tasks: Vec<AgentTask>,
+    selected_task: Option<String>,
+    new_task_title: String,
+    new_task_description: String,
+    new_task_priority: i32,
+    new_task_agent: Option<String>,
+    new_task_deadline: Option<DateTime<Utc>>,
+    new_task_estimated_duration: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -96,59 +123,19 @@ pub enum Message {
     Close(pane_grid::Pane),
     CloseFocused,
     
-    // CLI Messages
-    CliStart,
-    CliStop,
-    CliStatus,
+    // Component Messages
+    AgentMessage(agents::AgentMessage),
+    WorkflowMessage(workflows::WorkflowMessage),
+    TaskMessage(tasks::TaskMessage),
+    SettingsMessage(settings::SettingsMessage),
+    LogMessage(logs::LogMessage),
     
-    // Agent Management
-    RefreshAgents,
-    StartAgent(String),
-    StopAgent(String),
-    ViewAgentDetails(String),
-    AgentsUpdated(Vec<Agent>),
-    UpdateAgentConfig(String, AgentConfig),
-    
-    // Configuration
-    UpdateConfig(ConfigMessage),
-    SaveConfig(String),
-    ConfigUpdate(ConfigMessage),
-    
-    // UI State
+    // View Management
     ChangeView(View),
-    UpdateSearch(String),
-    UpdateSort(SortOrder),
-    SearchQueryChanged(String),
-    SortOrderChanged(SortOrder),
-    
-    // LLM Management
-    AddLLMServer(String, String),  // (url, provider)
-    RemoveLLMServer(String),
-    ConnectLLM(String),
-    DisconnectLLM(String),
-    ConnectToLLM(String),
-    DisconnectFromLLM(String),
-    UpdateNewServerUrl(String),
-    UpdateNewServerProvider(String),
-    SelectModel(String, String),
-    ModelsLoaded(String, Vec<LLMModel>),
+    Tick,
     
     // System
-    ShowLog(String),
-    ShowLogs(String),
-    ClearLogs,
     Batch(Vec<Message>),
-    
-    // Workflow Management
-    CreateWorkflow(String, Vec<WorkflowStep>),
-    ExecuteWorkflow(String),
-    ListWorkflows,
-    WorkflowsUpdated(Vec<AgentWorkflow>),
-    ViewWorkflowDetails(String),
-    AddWorkflowStep(WorkflowStep),
-    RemoveWorkflowStep(usize),
-    UpdateWorkflowName(String),
-    WorkflowStatusChanged(String, WorkflowStatus),
 }
 
 // New helper types for better code organization
@@ -182,35 +169,40 @@ impl Example {
         let dock_items = vec![
             DockItem {
                 name: "Agents".to_string(),
-                icon: "👥",
+                icon: "👥".to_string(),
                 action: Message::ChangeView(View::Agents),
             },
             DockItem {
-                name: "Workflows".to_string(),
-                icon: "🔄",
-                action: Message::ChangeView(View::Workflows),
-            },
-            DockItem {
                 name: "Settings".to_string(),
-                icon: "⚙️",
+                icon: "⚙️".to_string(),
                 action: Message::ChangeView(View::Settings),
             },
             DockItem {
                 name: "Logs".to_string(),
-                icon: "📝",
+                icon: "📝".to_string(),
                 action: Message::ChangeView(View::Logs),
+            },
+            DockItem {
+                name: "Workflows".to_string(),
+                icon: "🔄".to_string(),
+                action: Message::ChangeView(View::Workflows),
+            },
+            DockItem {
+                name: "Tasks".to_string(),
+                icon: "✅".to_string(),
+                action: Message::ChangeView(View::Tasks),
             },
         ];
 
         (
-        Example {
-            panes,
-            panes_created: 1,
-            focus: None,
-            cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
-            agents: Vec::new(),
-            selected_agent: None,
-            logs: Vec::new(),
+            Example {
+                panes,
+                panes_created: 1,
+                focus: None,
+                cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
+                agents: Vec::new(),
+                selected_agent: None,
+                logs: Vec::new(),
                 config_state: AgentConfigState::default(),
                 search_query: String::new(),
                 sort_order: SortOrder::NameAsc,
@@ -227,6 +219,14 @@ impl Example {
                 selected_workflow: None,
                 new_workflow_name: String::new(),
                 new_workflow_steps: Vec::new(),
+                tasks: Vec::new(),
+                selected_task: None,
+                new_task_title: String::new(),
+                new_task_description: String::new(),
+                new_task_priority: 50,
+                new_task_agent: None,
+                new_task_deadline: None,
+                new_task_estimated_duration: 3600,
             },
             Task::none(),
         )
@@ -238,463 +238,84 @@ impl Example {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Split(axis, pane) => {
-                let result =
-                    self.panes.split(axis, pane, Pane::new(self.panes_created));
-
-                if let Some((pane, _)) = result {
-                    self.focus = Some(pane);
-                }
-
-                self.panes_created += 1;
+            Message::AgentMessage(_msg) => {
+                // Handle agent messages
                 Task::none()
             }
-            Message::SplitFocused(axis) => {
-                if let Some(pane) = self.focus {
-                    let result = self.panes.split(
-                        axis,
-                        pane,
-                        Pane::new(self.panes_created),
-                    );
-
-                    if let Some((pane, _)) = result {
-                        self.focus = Some(pane);
-                    }
-
-                    self.panes_created += 1;
-                }
+            Message::WorkflowMessage(_msg) => {
+                // Handle workflow messages
                 Task::none()
             }
-            Message::FocusAdjacent(direction) => {
-                if let Some(pane) = self.focus {
-                    if let Some(adjacent) = self.panes.adjacent(pane, direction)
-                    {
-                        self.focus = Some(adjacent);
-                    }
-                }
+            Message::TaskMessage(_msg) => {
+                // Handle task messages
                 Task::none()
             }
-            Message::Clicked(pane) => {
-                self.focus = Some(pane);
+            Message::SettingsMessage(_msg) => {
+                // Handle settings messages
                 Task::none()
             }
-            Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
-                self.panes.resize(split, ratio);
-                Task::none()
-            }
-            Message::Dragged(pane_grid::DragEvent::Dropped {
-                pane,
-                target,
-            }) => {
-                self.panes.drop(pane, target);
-                Task::none()
-            }
-            Message::Dragged(_) => Task::none(),
-            Message::TogglePin(pane) => {
-                if let Some(Pane { is_pinned, .. }) = self.panes.get_mut(pane) {
-                    *is_pinned = !*is_pinned;
-                }
-                Task::none()
-            }
-            Message::Maximize(pane) => {
-                self.panes.maximize(pane);
-                Task::none()
-            }
-            Message::Restore => {
-                self.panes.restore();
-                Task::none()
-            }
-            Message::Close(pane) => {
-                if let Some((_, sibling)) = self.panes.close(pane) {
-                    self.focus = Some(sibling);
-                }
-                Task::none()
-            }
-            Message::CloseFocused => {
-                if let Some(pane) = self.focus {
-                    if let Some(Pane { is_pinned, .. }) = self.panes.get(pane) {
-                        if !is_pinned {
-                            if let Some((_, sibling)) = self.panes.close(pane) {
-                                self.focus = Some(sibling);
-                            }
-                        }
-                    }
-                }
-                Task::none()
-            }
-            Message::CliStart => {
-                let handler = self.cli_handler.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handler.start(None).await {
-                        eprintln!("Failed to start server: {:?}", e);
-                    }
-                });
-                Task::none()
-            }
-            Message::CliStop => {
-                let handler = self.cli_handler.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handler.stop().await {
-                        eprintln!("Failed to stop server: {:?}", e);
-                    }
-                });
-                Task::none()
-            }
-            Message::CliStatus => {
-                let handler = self.cli_handler.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handler.status().await {
-                        eprintln!("Failed to get status: {:?}", e);
-                    }
-                });
-                Task::none()
-            }
-            Message::RefreshAgents => {
-                let handler = self.cli_handler.clone();
-                tokio::spawn(async move {
-                    if let Ok(cli_agents) = handler.list_agents(None).await {
-                        debug!("Found {} agents", cli_agents.len());
-                        let agents = cli_agents.into_iter()
-                            .map(crate::models::agent::Agent::from_cli_agent)
-                            .collect();
-                        return Message::AgentsUpdated(agents);
-                    }
-                    Message::AgentsUpdated(Vec::new()) // Return empty list on error
-                });
-                Task::none()
-            }
-            Message::StartAgent(id) => {
-                let handler = self.cli_handler.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handler.create_agent(
-                        format!("Agent {}", id),
-                        crate::cli::AgentConfig::default()
-                    ).await {
-                        eprintln!("Failed to start agent: {}", e);
-                    }
-                });
-                Task::none()
-            }
-            Message::StopAgent(id) => {
-                let handler = self.cli_handler.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handler.stop_agent(&id).await {
-                        eprintln!("Failed to stop agent: {}", e);
-                    }
-                });
-                Task::none()
-            }
-            Message::ViewAgentDetails(id) => {
-                if id.is_empty() {
-                    self.selected_agent = None;
-                    Task::none()
-                } else {
-                    self.selected_agent = Some(id.clone());
-                    let handler = self.cli_handler.clone();
-                    Task::perform(
-                        async move {
-                            if let Ok(config) = handler.get_agent_config(&id).await {
-                                vec![
-                                    Message::ConfigUpdate(ConfigMessage::UpdateMaxTasks(config.max_concurrent_tasks.to_string())),
-                                    Message::ConfigUpdate(ConfigMessage::UpdatePriority(config.priority_threshold.to_string())),
-                                    Message::ConfigUpdate(ConfigMessage::UpdateProvider(config.llm_provider.clone())),
-                                    Message::ConfigUpdate(ConfigMessage::UpdateModel(config.llm_model.clone())),
-                                    Message::ConfigUpdate(ConfigMessage::UpdateTimeout(config.timeout_seconds.to_string())),
-                                    Message::ShowLogs(format!("Loaded configuration for agent {}", id)),
-                                ]
-                            } else {
-                                vec![Message::ShowLogs(format!("Failed to load configuration for agent {}", id))]
-                            }
-                        },
-                        Message::Batch
-                    )
-                }
-            }
-            Message::ConnectLLM(_id) => {
-                // Implementation for connecting to an LLM
-                Task::none()
-            }
-            Message::DisconnectLLM(provider) => {
-                if let Some(server) = self.llm_settings.servers.iter_mut()
-                    .find(|s| s.provider == provider) {
-                    server.is_connected = false;
-                }
-                self.llm_settings.selected_provider = String::new();
-                Task::none()
-            }
-            Message::AgentsUpdated(new_agents) => {
-                self.agents = new_agents;
-                Task::none()
-            }
-            Message::UpdateAgentConfig(id, config) => {
-                let handler = self.cli_handler.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handler.update_agent_config(id, config).await {
-                        eprintln!("Failed to update agent config: {}", e);
-                    }
-                });
-                Task::none()
-            }
-            Message::ShowLogs(log) => {
-                self.logs.push(log);
-                // Keep only the last 1000 log entries to prevent memory issues
-                if self.logs.len() > 1000 {
-                    self.logs.drain(0..self.logs.len() - 1000);
-                }
-                Task::none()
-            }
-            Message::ClearLogs => {
-                self.logs.clear();
-                Task::none()
-            }
-            Message::ConfigUpdate(msg) => {
-                match msg {
-                    ConfigMessage::UpdateMaxTasks(value) => {
-                        self.config_state.max_concurrent_tasks = value.clone();
-                        if let Ok(tasks) = value.parse() {
-                            if let Some(agent_id) = &self.selected_agent {
-                                let mut config = crate::cli::AgentConfig::default();
-                                config.max_concurrent_tasks = tasks;
-                                let handler = self.cli_handler.clone();
-                                let id = agent_id.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = handler.update_agent_config(id, config).await {
-                                        eprintln!("Failed to update agent config: {}", e);
-                                    }
-                                });
-                            }
-                        }
-                        Task::none()
-                    }
-                    ConfigMessage::UpdatePriority(value) => {
-                        self.config_state.priority_threshold = value.clone();
-                        if let Ok(priority) = value.parse() {
-                            if let Some(agent_id) = &self.selected_agent {
-                                let mut config = crate::cli::AgentConfig::default();
-                                config.priority_threshold = priority;
-                                let handler = self.cli_handler.clone();
-                                let id = agent_id.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = handler.update_agent_config(id, config).await {
-                                        eprintln!("Failed to update agent config: {}", e);
-                                    }
-                                });
-                            }
-                        }
-                        Task::none()
-                    }
-                    ConfigMessage::UpdateProvider(value) => {
-                        self.config_state.llm_provider = value.clone();
-                        if let Some(agent_id) = &self.selected_agent {
-                            let mut config = crate::cli::AgentConfig::default();
-                            config.llm_provider = value;
-                            let handler = self.cli_handler.clone();
-                            let id = agent_id.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = handler.update_agent_config(id, config).await {
-                                    eprintln!("Failed to update agent config: {}", e);
-                                }
-                            });
-                        }
-                        Task::none()
-                    }
-                    ConfigMessage::UpdateModel(value) => {
-                        self.config_state.llm_model = value.clone();
-                        if let Some(agent_id) = &self.selected_agent {
-                            let mut config = crate::cli::AgentConfig::default();
-                            config.llm_model = value;
-                            let handler = self.cli_handler.clone();
-                            let id = agent_id.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = handler.update_agent_config(id, config).await {
-                                    eprintln!("Failed to update agent config: {}", e);
-                                }
-                            });
-                        }
-                        Task::none()
-                    }
-                    ConfigMessage::UpdateTimeout(value) => {
-                        self.config_state.timeout_seconds = value.clone();
-                        if let Ok(timeout) = value.parse() {
-                            if let Some(agent_id) = &self.selected_agent {
-                                let mut config = crate::cli::AgentConfig::default();
-                                config.timeout_seconds = timeout;
-                                let handler = self.cli_handler.clone();
-                                let id = agent_id.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = handler.update_agent_config(id, config).await {
-                                        eprintln!("Failed to update agent config: {}", e);
-                                    }
-                                });
-                            }
-                        }
-                        Task::none()
-                    }
-                }
-            }
-            Message::Batch(messages) => {
-                let mut command = Task::none();
-                for message in messages {
-                    command = Task::batch(vec![command, self.update(message)]);
-                }
-                command
-            }
-            Message::SearchQueryChanged(query) => {
-                self.search_query = query;
-                Task::none()
-            }
-            Message::SortOrderChanged(order) => {
-                self.sort_order = order;
-                Task::none()
-            }
-            Message::AddLLMServer(url, provider) => {
-                self.llm_settings.servers.push(LLMServerConfig {
-                    provider: provider.clone(),
-                    url: url.clone(),
-                    is_connected: false,
-                    selected_model: None,
-                });
-                Task::none()
-            }
-            Message::RemoveLLMServer(provider) => {
-                self.llm_settings.servers.retain(|server| server.provider != provider);
-                Task::none()
-            }
-            Message::ConnectToLLM(provider) => {
-                self.llm_settings.selected_provider = provider.clone();
-                Task::none()
-            }
-            Message::DisconnectFromLLM(provider) => {
-                if let Some(server) = self.llm_settings.servers.iter_mut()
-                    .find(|s| s.provider == provider) {
-                    server.is_connected = false;
-                }
-                self.llm_settings.selected_provider = String::new();
-                Task::none()
-            }
-            Message::SelectModel(model, provider) => {
-                if let Some(server) = self.llm_settings.servers.iter_mut()
-                    .find(|s| s.provider == provider) {
-                    server.selected_model = Some(model.clone());
-                }
-                
-                let handler = self.cli_handler.clone();
-                let provider_clone = provider.clone();
-                let model_clone = model.clone();
-                
-                Task::perform(
-                    async move {
-                        if let Err(e) = handler.select_model(&provider_clone, &model_clone).await {
-                            Message::ShowLogs(format!("Failed to select model: {}", e))
-                        } else {
-                            Message::ShowLogs(format!("Selected model {} for {}", model, provider))
-                        }
-                    },
-                    |msg| msg
-                )
-            }
-            Message::UpdateNewServerUrl(url) => {
-                self.llm_settings.new_server_url = url.clone();
-                Task::none()
-            }
-            Message::UpdateNewServerProvider(provider) => {
-                self.llm_settings.new_server_provider = provider.clone();
-                Task::none()
-            }
-            Message::ModelsLoaded(_provider, models) => {
-                self.llm_settings.available_models = models;
+            Message::LogMessage(_msg) => {
+                // Handle log messages
                 Task::none()
             }
             Message::ChangeView(view) => {
                 self.current_view = view;
                 Task::none()
             }
-            Message::UpdateConfig(_config) => {
-                // Handle config update
+            Message::Tick => {
+                // Handle periodic updates
                 Task::none()
             }
-            Message::SaveConfig(_id) => {
-                // Handle config save
-                Task::none()
-            }
-            Message::UpdateSearch(query) => {
-                self.search_query = query;
-                Task::none()
-            }
-            Message::UpdateSort(order) => {
-                self.sort_order = order;
-                Task::none()
-            }
-            Message::ShowLog(log) => {
-                self.logs.push(log);
-                if self.logs.len() > MAX_LOGS {
-                    self.logs.drain(0..self.logs.len() - MAX_LOGS);
+            Message::Batch(messages) => {
+                // Handle batch messages
+                for message in messages {
+                    self.update(message);
                 }
                 Task::none()
             }
-            Message::CreateWorkflow(name, steps) => {
-                let handler = self.cli_handler.clone();
-                Task::perform(
-                    async move {
-                        match handler.create_workflow(name, steps).await {
-                            Ok(_) => Message::ListWorkflows,
-                            Err(e) => Message::ShowLogs(format!("Failed to create workflow: {}", e))
-                        }
-                    },
-                    |msg| msg
-                )
-            }
-            Message::ExecuteWorkflow(id) => {
-                let handler = self.cli_handler.clone();
-                let workflow_id = id.clone();
-                Task::perform(
-                    async move {
-                        match handler.execute_workflow(&workflow_id).await {
-                            Ok(_) => Message::WorkflowStatusChanged(id, WorkflowStatus::Running),
-                            Err(e) => Message::ShowLogs(format!("Failed to execute workflow: {}", e))
-                        }
-                    },
-                    |msg| msg
-                )
-            }
-            Message::ListWorkflows => {
-                let handler = self.cli_handler.clone();
-                Task::perform(
-                    async move {
-                        match handler.list_workflows().await {
-                            Ok(workflows) => Message::WorkflowsUpdated(workflows),
-                            Err(e) => Message::ShowLogs(format!("Failed to list workflows: {}", e))
-                        }
-                    },
-                    |msg| msg
-                )
-            }
-            Message::WorkflowsUpdated(workflows) => {
-                self.workflows = workflows;
+            // Layout messages
+            Message::Split(_axis, _pane) => {
+                // Handle split
                 Task::none()
             }
-            Message::ViewWorkflowDetails(id) => {
-                self.selected_workflow = Some(id);
+            Message::SplitFocused(_axis) => {
+                // Handle split focused
                 Task::none()
             }
-            Message::AddWorkflowStep(step) => {
-                self.new_workflow_steps.push(step);
+            Message::FocusAdjacent(_direction) => {
+                // Handle focus adjacent
                 Task::none()
             }
-            Message::RemoveWorkflowStep(index) => {
-                if index < self.new_workflow_steps.len() {
-                    self.new_workflow_steps.remove(index);
-                }
+            Message::Clicked(_pane) => {
+                // Handle click
                 Task::none()
             }
-            Message::UpdateWorkflowName(name) => {
-                self.new_workflow_name = name;
+            Message::Dragged(_event) => {
+                // Handle drag
                 Task::none()
             }
-            Message::WorkflowStatusChanged(id, status) => {
-                if let Some(workflow) = self.workflows.iter_mut().find(|w| w.id == id) {
-                    workflow.status = status;
-                }
+            Message::Resized(_event) => {
+                // Handle resize
+                Task::none()
+            }
+            Message::TogglePin(_pane) => {
+                // Handle toggle pin
+                Task::none()
+            }
+            Message::Maximize(_pane) => {
+                // Handle maximize
+                Task::none()
+            }
+            Message::Restore => {
+                // Handle restore
+                Task::none()
+            }
+            Message::Close(_pane) => {
+                // Handle close
+                Task::none()
+            }
+            Message::CloseFocused => {
+                // Handle close focused
                 Task::none()
             }
         }
@@ -702,924 +323,138 @@ impl Example {
 
     fn view(&self) -> Element<Message> {
         let content = match self.current_view {
-            View::Agents => self.view_agent_panel(),
-            View::Settings => self.view_settings(),
-            View::Logs => self.view_logs_panel(),
-            View::Workflows => self.view_workflow_panel(),
-        };
+            View::Agents => {
+                if let Some(agent_id) = &self.selected_agent {
+                    if let Some(agent) = self.agents.iter().find(|a| &a.id == agent_id) {
+                        agents::view_agent_details(agent, &self.config_state)
+                            .map(Message::AgentMessage)
+                    } else {
+                        container(
+                            Text::new("Agent not found")
+                                .size(32)
+                        )
+                        .padding(20)
+                        .style(styles::panel_content)
+                        .into()
+                    }
+                } else {
+                    agents::view_agents_list(&self.agents)
+                        .map(Message::AgentMessage)
+                }
+            }
+            View::Settings => {
+                let header = settings::view_settings_header()
+                    .map(|msg| Message::SettingsMessage(msg));
+                let add_server_form = settings::view_add_server_form(
+                    &self.llm_settings.new_server_url,
+                    &self.llm_settings.new_server_provider,
+                )
+                .map(|msg| Message::SettingsMessage(msg));
+                let servers_list = settings::view_servers_list(
+                    &self.llm_settings.servers,
+                    &self.llm_settings.available_models,
+                )
+                .map(|msg| Message::SettingsMessage(msg));
 
-        let dock_items: Vec<Element<Message>> = self.dock_items.iter().map(|item| {
-            let button: Element<Message> = button(
                 container(
                     column![
-                        Text::new(item.icon).size(32),
-                        Text::new(&item.name).size(12),
+                        header,
+                        add_server_form,
+                        servers_list
                     ]
-                    .spacing(5)
+                    .spacing(20)
                 )
-                .padding(10)
-                .style(style::dock_item)
+                .padding(20)
+                .into()
+            }
+            View::Logs => {
+                logs::view_logs_panel(&self.logs)
+            }
+            View::Workflows => {
+                workflows::view_workflow_header()
+                    .map(Message::WorkflowMessage)
+            }
+            View::Tasks => {
+                tasks::view_task_header()
+                    .map(Message::TaskMessage)
+            }
+        };
+
+        let dock = self.view_dock();
+
+        container(
+            column![
+                content,
+                dock,
+            ]
+            .spacing(20)
+        )
+        .padding(20)
+        .style(styles::main_container)
+        .into()
+    }
+
+    fn view_dock(&self) -> Element<Message> {
+        let dock_items = self.dock_items.iter().map(|item| {
+            container(
+                column![
+                    Text::new(&item.icon).size(24),
+                    Text::new(&item.name).size(12)
+                ]
+                .spacing(5)
+                .width(Length::Fill)
             )
-            .on_press(item.action.clone())
-            .style(if let Message::ChangeView(ref view) = item.action {
-                if std::mem::discriminant(view) == std::mem::discriminant(&self.current_view) {
-                    button::primary
-                } else {
-                    button::secondary
-                }
-            } else {
-                button::secondary
-            })
-            .into();
-            button
-        }).collect();
-
-        let dock_buttons: Element<Message> = Row::with_children(dock_items).spacing(15).into();
-
-        let dock_container: Element<Message> = container(dock_buttons)
             .padding(10)
-            .style(style::dock)
-            .into();
-
-        let column_content: Element<Message> = column![
-            content,
-            dock_container,
-        ].into();
-
-        container(column_content)
-            .padding(20)
-            .style(style::main_container)
+            .style(styles::dock_item)
             .into()
+        }).collect::<Vec<_>>();
+
+        container(
+            Row::with_children(dock_items)
+                .spacing(10)
+                .padding(10)
+        )
+        .style(styles::dock)
+        .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch(vec![
-            keyboard::on_key_press(|key_code, modifiers| {
-                if !modifiers.command() {
-                    return None;
+            keyboard::on_key_press(|key: keyboard::Key, _modifiers: keyboard::Modifiers| {
+                match key {
+                    keyboard::Key::Character(c) => match c.as_str() {
+                        "a" => Some(Message::ChangeView(View::Agents)),
+                        "s" => Some(Message::ChangeView(View::Settings)),
+                        "l" => Some(Message::ChangeView(View::Logs)),
+                        "w" => Some(Message::ChangeView(View::Workflows)),
+                        "t" => Some(Message::ChangeView(View::Tasks)),
+                        _ => None,
+                    },
+                    _ => None,
                 }
-                handle_hotkey(key_code)
             }),
-            time::every(REFRESH_INTERVAL)
-                .map(|_| Message::RefreshAgents),
-            time::every(Duration::from_secs(10))
-                .map(|_| Message::ListWorkflows),
-            self.log_subscription(),
+            iced::time::every(REFRESH_INTERVAL)
+                .map(|_| Message::Tick),
         ])
     }
-
-    fn log_subscription(&self) -> Subscription<Message> {
-        time::every(LOG_CHECK_INTERVAL)
-            .map(|_| {
-                let now = std::time::Instant::now();
-                Message::ShowLogs(format!("System check at: {:?}", now))
-            })
-    }
-
-    #[allow(dead_code)]
-    fn view_pane_grid(&self) -> Element<Message> {
-        let pane_grid = PaneGrid::new(
-            &self.panes,
-            |_id, pane, _is_maximized| {
-                let title = format!("Pane {}", pane.id);
-                let content: Element<_> = text(title).into();
-                pane_grid::Content::new(content)
-            }
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .spacing(10)
-        .on_drag(Message::Dragged)
-        .on_resize(10, Message::Resized);
-
-        container(pane_grid)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(10)
-            .into()
-    }
-
-    fn view_settings(&self) -> Element<Message> {
-        let header = container(
-            Text::new("LLM Settings")
-                .size(32)
-                .style(style::header_text)
-        )
-        .padding(20)
-        .style(style::panel_content);
-
-        let add_server_form = container(
-            column![
-                Text::new("Add New LLM Server")
-                    .size(24)
-                    .style(style::header_text),
-                row![
-                    text_input("Provider (e.g. LMStudio, Ollama)", &self.llm_settings.new_server_provider)
-                        .on_input(Message::UpdateNewServerProvider)
-                        .padding(10)
-                        .size(16),
-                    text_input("Server URL", &self.llm_settings.new_server_url)
-                        .on_input(Message::UpdateNewServerUrl)
-                        .padding(10)
-                        .size(16),
-                    button(Text::new("Add Server").size(16))
-                        .on_press(Message::AddLLMServer(
-                            self.llm_settings.new_server_provider.clone(),
-                            self.llm_settings.new_server_url.clone()
-                        ))
-                        .padding(10)
-                        .style(button::primary),
-                ].spacing(15),
-            ]
-            .spacing(20)
-        )
-        .padding(20)
-        .style(style::panel_content);
-
-        let servers_list = container(
-            column(
-                self.llm_settings.servers.iter().map(|server| {
-                    container(
-                        column![
-                            row![
-                                Text::new(&server.provider).size(20).style(style::header_text),
-                                Text::new(&server.url).size(16),
-                                if server.is_connected {
-                                    button(Text::new("Disconnect").size(16))
-                                        .on_press(Message::DisconnectFromLLM(server.provider.clone()))
-                                        .style(button::danger)
-                                } else {
-                                    button(Text::new("Connect").size(16))
-                                        .on_press(Message::ConnectToLLM(server.provider.clone()))
-                                        .style(button::primary)
-                                },
-                                button(Text::new("Remove").size(16))
-                                    .on_press(Message::RemoveLLMServer(server.provider.clone()))
-                                    .style(button::danger),
-                            ].spacing(15),
-                            if server.is_connected {
-                                container(
-                                    column![
-                                        Text::new("Available Models").size(16).style(style::header_text),
-                                        column(
-                                            self.llm_settings.available_models.iter().map(|model| {
-                                                container(
-                                                    row![
-                                                        column![
-                                                            Text::new(&model.name).size(16),
-                                                            Text::new(&model.description).size(14),
-                                                        ],
-                                                        Text::new(format!("Size: {}", model.size)).size(14),
-                                                        Text::new(format!("Context: {}k tokens", model.context_length / 1024)).size(14),
-                                                        if let Some(quant) = &model.quantization {
-                                                            Text::new(format!("Quantization: {}", quant)).size(14)
-                                                        } else {
-                                                            Text::new("").size(14)
-                                                        },
-                                                        button(
-                                                            Text::new(
-                                                                if Some(&model.name) == server.selected_model.as_ref() {
-                                                                    "Selected"
-                                                                } else {
-                                                                    "Select"
-                                                                }
-                                                            ).size(14)
-                                                        )
-                                                        .on_press(Message::SelectModel(
-                                                            server.provider.clone(),
-                                                            model.name.clone()
-                                                        ))
-                                                        .style(
-                                                            if Some(&model.name) == server.selected_model.as_ref() {
-                                                                button::primary
-                                                            } else {
-                                                                button::secondary
-                                                            }
-                                                        ),
-                                                    ]
-                                                    .spacing(15)
-                                                    .align_y(iced::alignment::Vertical::Center)
-                                                )
-                                                .padding(10)
-                                                .style(style::panel_content)
-                                                .into()
-                                            }).collect::<Vec<Element<Message>>>()
-                                        ).spacing(10)
-                                    ]
-                                ).padding(10)
-                                .into()
-                            } else {
-                                let content: Element<Message> = container(
-                                    Text::new("Connect to view available models")
-                                        .size(14)
-                                ).padding(10)
-                                 .style(style::panel_content)
-                                 .into();
-                                content
-                            }
-                        ]
-                        .spacing(15)
-                    )
-                    .padding(15)
-                    .style(style::panel_content)
-                    .into()
-                }).collect::<Vec<Element<Message>>>()
-            ).spacing(20)
-        )
-        .padding(20)
-        .style(style::panel_content);
-
-        container(
-            column![
-                header,
-                add_server_form,
-                servers_list,
-            ]
-            .spacing(20)
-        )
-        .padding(20)
-        .into()
-    }
-
-    fn view_logs_panel(&self) -> Element<Message> {
-        container(
-            column![
-                Text::new("System Logs")
-                    .size(32)
-                    .style(style::header_text),
-                scrollable(
-                    column(
-                        self.logs.iter()
-                            .map(|log| Text::new(log).size(14).into())
-                            .collect::<Vec<Element<Message>>>()
-                    ).spacing(10)
-                ).height(Length::Fill),
-                button(
-                    Text::new("Clear Logs")
-                        .size(16)
-                )
-                .on_press(Message::ClearLogs)
-                .padding(15)
-                .style(button::danger),
-            ]
-            .spacing(20)
-        )
-        .padding(20)
-        .style(style::panel_content)
-        .into()
-    }
-
-    fn view_agent_panel(&self) -> Element<Message> {
-        match &self.selected_agent {
-            Some(_) => self.view_agent_details(),
-            None => {
-                let header = container(
-                    Text::new("AI Agents Management")
-                        .size(32)
-                        .style(style::header_text)
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                // Add search input with new styling
-                let search_bar = container(
-                    row![
-                        Text::new("🔍").size(20),
-                        text_input("Search agents...", &self.search_query)
-                            .on_input(Message::SearchQueryChanged)
-                            .padding(10)
-                            .size(16)
-                            .width(Length::Fill),
-                    ]
-                    .spacing(15)
-                )
-                .padding(15)
-                .style(style::search_bar);
-
-                let sort_controls = container(
-                    row![
-                        Text::new("Sort by:").size(16).style(style::header_text),
-                        button(Text::new("Name").size(16))
-                            .on_press(Message::SortOrderChanged(
-                                if self.sort_order == SortOrder::NameAsc {
-                                    SortOrder::NameDesc
-                                } else {
-                                    SortOrder::NameAsc
-                                }
-                            ))
-                            .padding(10)
-                            .style(if matches!(self.sort_order, SortOrder::NameAsc | SortOrder::NameDesc) {
-                                button::primary
-                            } else {
-                                button::secondary
-                            }),
-                        button(Text::new("Status").size(16))
-                            .on_press(Message::SortOrderChanged(
-                                if self.sort_order == SortOrder::StatusAsc {
-                                    SortOrder::StatusDesc
-                                } else {
-                                    SortOrder::StatusAsc
-                                }
-                            ))
-                            .padding(10)
-                            .style(if matches!(self.sort_order, SortOrder::StatusAsc | SortOrder::StatusDesc) {
-                                button::primary
-                            } else {
-                                button::secondary
-                            }),
-                        button(Text::new("Last Active").size(16))
-                            .on_press(Message::SortOrderChanged(
-                                if self.sort_order == SortOrder::LastActiveAsc {
-                                    SortOrder::LastActiveDesc
-                                } else {
-                                    SortOrder::LastActiveAsc
-                                }
-                            ))
-                            .padding(10)
-                            .style(if matches!(self.sort_order, SortOrder::LastActiveAsc | SortOrder::LastActiveDesc) {
-                                button::primary
-                            } else {
-                                button::secondary
-                            }),
-                    ]
-                    .spacing(15)
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let mut agent_list = column![header, search_bar, sort_controls].spacing(20);
-
-                // Filter and sort agents
-                let mut filtered_agents: Vec<_> = self.agents.iter()
-                    .filter(|agent| {
-                        if self.search_query.is_empty() {
-                            true
-                        } else {
-                            agent.name.to_lowercase().contains(&self.search_query.to_lowercase()) ||
-                            agent.id.to_lowercase().contains(&self.search_query.to_lowercase())
-                        }
-                    })
-                    .collect();
-
-                filtered_agents.sort_by(|a, b| {
-                    match self.sort_order {
-                        SortOrder::NameAsc => a.name.cmp(&b.name),
-                        SortOrder::NameDesc => b.name.cmp(&a.name),
-                        SortOrder::StatusAsc => a.status.cmp(&b.status),
-                        SortOrder::StatusDesc => b.status.cmp(&a.status),
-                        SortOrder::LastActiveAsc => a.last_heartbeat.cmp(&b.last_heartbeat),
-                        SortOrder::LastActiveDesc => b.last_heartbeat.cmp(&a.last_heartbeat),
-                    }
-                });
-
-                for agent in filtered_agents {
-                    let agent_row = container(
-                        row![
-                            container(
-                                Text::new("●")
-                                    .size(12)
-                            )
-                            .padding(5)
-                            .style(|theme| style::status_badge_style(agent.status)(theme)),
-                        Text::new(&agent.name).size(16),
-                            row![
-                                button(Text::new("Start").size(14))
-                            .on_press(Message::StartAgent(agent.id.clone()))
-                                .padding(10)
-                            .style(button::primary),
-                                button(Text::new("Stop").size(14))
-                            .on_press(Message::StopAgent(agent.id.clone()))
-                                .padding(10)
-                            .style(button::danger),
-                                button(Text::new("Details").size(14))
-                                    .on_press(Message::ViewAgentDetails(agent.id.clone()))
-                                    .padding(10),
-                            ].spacing(10)
-                        ]
-                        .spacing(15)
-                        .align_y(iced::alignment::Vertical::Center)
-                    )
-                    .padding(15)
-                    .style(style::panel_content);
-
-                    agent_list = agent_list.push(agent_row);
-                }
-
-                let logs_section = container(
-                    column![
-                        Text::new("System Logs").size(20).style(style::header_text),
-                        scrollable(
-                            column(
-                                self.logs.iter()
-                                    .map(|log| Text::new(log).size(14).into())
-                                    .collect::<Vec<Element<Message>>>()
-                            ).spacing(10)
-                        ).height(Length::Fixed(200.0))
-                    ]
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let refresh_button = button(
-                    Text::new("Refresh Agents")
-                        .size(16)
-                )
-                    .on_press(Message::RefreshAgents)
-                .padding(15)
-                .style(button::primary);
-
-                container(
-                    column![
-                        agent_list,
-                        logs_section,
-                        refresh_button,
-                    ]
-                    .spacing(20)
-                )
-                    .padding(20)
-                .into()
-            }
-        }
-    }
-
-    fn view_agent_details(&self) -> Element<Message> {
-        if let Some(agent_id) = &self.selected_agent {
-            if let Some(agent) = self.agents.iter().find(|a| &a.id == agent_id) {
-                let header = container(
-                    Text::new(format!("Agent Details: {}", agent.name))
-                        .size(32)
-                        .style(style::header_text)
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let details = container(
-                    column![
-                        row![
-                            container(
-                                Text::new("●")
-                                    .size(12)
-                            )
-                            .padding(5)
-                            .style(|theme| style::status_badge_style(agent.status)(theme)),
-                            Text::new(format!("Status: {:?}", agent.status))
-                                .size(16)
-                                .style(style::header_text)
-                        ].spacing(10),
-                        row![
-                            Text::new("ID: ").size(16).style(style::header_text),
-                            Text::new(&agent.id).size(16)
-                        ],
-                        row![
-                            Text::new("Capabilities: ").size(16).style(style::header_text),
-                            Text::new(agent.capabilities.join(", ")).size(16)
-                        ],
-                        row![
-                            Text::new("Last Heartbeat: ").size(16).style(style::header_text),
-                            Text::new(agent.last_heartbeat.to_string()).size(16)
-                        ],
-                        if let Some(task) = &agent.current_task {
-                            row![
-                                Text::new("Current Task: ").size(16).style(style::header_text),
-                                Text::new(task).size(16)
-                            ]
-                        } else {
-                            row![
-                                Text::new("Current Task: ").size(16).style(style::header_text),
-                                Text::new("None").size(16)
-                            ]
-                        },
-                    ]
-                    .spacing(15)
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let config_form = container(
-                    column![
-                        Text::new("Agent Configuration")
-                            .size(24)
-                            .style(style::header_text),
-                        column![
-                            row![
-                                Text::new("Max Concurrent Tasks: ").size(16),
-                                text_input(
-                                    "4",
-                                    &self.config_state.max_concurrent_tasks,
-                                )
-                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateMaxTasks(value)))
-                                .padding(10)
-                                .size(16)
-                            ],
-                            row![
-                                Text::new("Priority Threshold: ").size(16),
-                                text_input(
-                                    "0",
-                                    &self.config_state.priority_threshold,
-                                )
-                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdatePriority(value)))
-                                .padding(10)
-                                .size(16)
-                            ],
-                            row![
-                                Text::new("LLM Provider: ").size(16),
-                                text_input(
-                                    "LMStudio",
-                                    &self.config_state.llm_provider,
-                                )
-                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateProvider(value)))
-                                .padding(10)
-                                .size(16)
-                            ],
-                            row![
-                                Text::new("LLM Model: ").size(16),
-                                text_input(
-                                    "default",
-                                    &self.config_state.llm_model,
-                                )
-                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateModel(value)))
-                                .padding(10)
-                                .size(16)
-                            ],
-                            row![
-                                Text::new("Timeout (seconds): ").size(16),
-                                text_input(
-                                    "30",
-                                    &self.config_state.timeout_seconds,
-                                )
-                                .on_input(|value| Message::ConfigUpdate(ConfigMessage::UpdateTimeout(value)))
-                                .padding(10)
-                                .size(16)
-                            ],
-                        ].spacing(15)
-                    ]
-                    .spacing(20)
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let logs = self.logs.iter()
-                    .filter(|log| log.contains(&agent.id))
-                    .collect::<Vec<_>>();
-
-                let log_view = container(
-                    column![
-                        Text::new("Agent Logs")
-                            .size(24)
-                            .style(style::header_text),
-                        scrollable(
-                            column(
-                                logs.iter()
-                                    .map(|log| Text::new(log.as_str()).size(14).into())
-                                    .collect::<Vec<Element<Message>>>()
-                            ).spacing(10)
-                        ).height(Length::Fixed(200.0))
-                    ]
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let close_button = button(
-                    Text::new("Close Details")
-                        .size(16)
-                )
-                .on_press(Message::ViewAgentDetails(String::new()))
-                .padding(15)
-                .style(button::primary);
-
-                container(
-                    column![
-                        header,
-                        details,
-                        config_form,
-                        log_view,
-                        close_button,
-                    ]
-                    .spacing(20)
-                )
-                .padding(20)
-                .style(style::panel_content)
-                .into()
-            } else {
-                container(
-                    Text::new("Agent not found")
-                        .size(32)
-                        .style(style::header_text)
-                )
-                .padding(20)
-                .style(style::panel_content)
-                .into()
-            }
-        } else {
-            container(
-                Text::new("Select an agent to view details")
-                    .size(32)
-                    .style(style::header_text)
-            )
-            .padding(20)
-            .style(style::panel_content)
-            .into()
-        }
-    }
-
-    fn view_workflow_panel(&self) -> Element<Message> {
-        match &self.selected_workflow {
-            Some(workflow_id) => self.view_workflow_details(workflow_id),
-            None => {
-                let header = container(
-                    Text::new("Workflow Management")
-                        .size(32)
-                        .style(style::header_text)
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let new_workflow_form = container(
-                    column![
-                        Text::new("Create New Workflow")
-                            .size(24)
-                            .style(style::header_text),
-                        row![
-                            text_input("Workflow Name", &self.new_workflow_name)
-                                .on_input(Message::UpdateWorkflowName)
-                                .padding(10)
-                                .size(16),
-                        ].spacing(15),
-                        // Add step configuration
-                        Text::new("Configure Steps")
-                            .size(20)
-                            .style(style::header_text),
-                        column(
-                            self.new_workflow_steps.iter().enumerate().map(|(index, step)| {
-                                container(
-                                    row![
-                                        Text::new(format!("Step {}", index + 1)).size(16),
-                                        Text::new(format!("Agent: {}", step.agent_id)).size(16),
-                                        match &step.action {
-                                            cli::AgentAction::ProcessText { input, .. } => 
-                                                Text::new(format!("Process Text: {}", input)),
-                                            cli::AgentAction::GenerateCode { prompt, language } => 
-                                                Text::new(format!("Generate {} Code: {}", language, prompt)),
-                                            cli::AgentAction::AnalyzeCode { code, aspects } => 
-                                                Text::new(format!("Analyze Code: {} ({})", code, aspects.join(", "))),
-                                            cli::AgentAction::CustomTask { task_type, parameters } => 
-                                                Text::new(format!("Custom Task: {} - {:?}", task_type, parameters)),
-                                        }.size(14),
-                                        button(Text::new("Remove").size(14))
-                                            .on_press(Message::RemoveWorkflowStep(index))
-                                            .style(button::danger)
-                                    ]
-                                    .spacing(10)
-                                )
-                                .padding(10)
-                                .style(style::panel_content)
-                                .into()
-                            }).collect::<Vec<Element<Message>>>()
-                        ).spacing(10),
-                        button(Text::new("Add Step").size(16))
-                            .on_press(Message::AddWorkflowStep(WorkflowStep {
-                                agent_id: String::new(),
-                                action: cli::AgentAction::ProcessText {
-                                    input: String::new(),
-                                    _max_tokens: 100,
-                                },
-                                dependencies: Vec::new(),
-                                retry_policy: None,
-                                timeout_seconds: None,
-                            }))
-                            .padding(10)
-                            .style(button::secondary),
-                        button(Text::new("Create Workflow").size(16))
-                            .on_press(Message::CreateWorkflow(
-                                self.new_workflow_name.clone(),
-                                self.new_workflow_steps.clone()
-                            ))
-                            .padding(10)
-                            .style(button::primary)
-                            .width(Length::Fill),
-                    ]
-                    .spacing(20)
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let workflows_list = container(
-                    column(
-                        self.workflows.iter().map(|workflow| {
-                            container(
-                                column![
-                                    row![
-                                        Text::new(&workflow.name).size(20).style(style::header_text),
-                                        Text::new(format!("Status: {:?}", workflow.status)).size(16),
-                                        if workflow.status == WorkflowStatus::Ready {
-                                            button(Text::new("Execute").size(16))
-                                                .on_press(Message::ExecuteWorkflow(workflow.id.clone()))
-                                                .style(button::primary)
-                                        } else {
-                                            button(Text::new("View Details").size(16))
-                                                .on_press(Message::ViewWorkflowDetails(workflow.id.clone()))
-                                                .style(button::secondary)
-                                        },
-                                    ].spacing(15),
-                                    if let Some(last_run) = workflow.last_run {
-                                        Text::new(format!("Last Run: {}", last_run.format("%Y-%m-%d %H:%M:%S"))).size(14)
-                                    } else {
-                                        Text::new("Never executed").size(14)
-                                    },
-                                    Text::new(format!("Steps: {}", workflow.steps.len())).size(14),
-                                ]
-                                .spacing(10)
-                            )
-                            .padding(15)
-                            .style(style::panel_content)
-                            .into()
-                        }).collect::<Vec<Element<Message>>>()
-                    ).spacing(20)
-                )
-                .padding(20)
-                .style(style::panel_content);
-
-                let refresh_button = button(
-                    Text::new("Refresh Workflows")
-                        .size(16)
-                )
-                .on_press(Message::ListWorkflows)
-                .padding(15)
-                .style(button::primary);
-
-                container(
-                    column![
-                        header,
-                        new_workflow_form,
-                        workflows_list,
-                        refresh_button,
-                    ]
-                    .spacing(20)
-                )
-                .padding(20)
-                .into()
-            }
-        }
-    }
-
-    fn view_workflow_details(&self, workflow_id: &str) -> Element<Message> {
-        if let Some(workflow) = self.workflows.iter().find(|w| w.id == workflow_id) {
-            let header = container(
-                column![
-                    Text::new(format!("Workflow Details: {}", workflow.name))
-                        .size(32)
-                        .style(style::header_text),
-                    Text::new(format!("Status: {:?}", workflow.status))
-                        .size(16)
-                ]
-            )
-            .padding(20)
-            .style(style::panel_content);
-
-            let steps_list = container(
-                column![
-                    Text::new("Workflow Steps")
-                        .size(24)
-                        .style(style::header_text),
-                    column(
-                        workflow.steps.iter().enumerate().map(|(index, step)| {
-                            container(
-                                row![
-                                    Text::new(format!("{}. ", index + 1)).size(16),
-                                    column![
-                                        Text::new(format!("Agent: {}", step.agent_id)).size(16),
-                                        match &step.action {
-                                            cli::AgentAction::ProcessText { input, .. } => 
-                                                Text::new(format!("Process Text: {}", input)),
-                                            cli::AgentAction::GenerateCode { prompt, language } => 
-                                                Text::new(format!("Generate {} Code: {}", language, prompt)),
-                                            cli::AgentAction::AnalyzeCode { code, aspects } => 
-                                                Text::new(format!("Analyze Code: {} ({})", code, aspects.join(", "))),
-                                            cli::AgentAction::CustomTask { task_type, parameters } => 
-                                                Text::new(format!("Custom Task: {} - {:?}", task_type, parameters)),
-                                        }.size(14),
-                                        if !step.dependencies.is_empty() {
-                                            Text::new(format!("Dependencies: {}", step.dependencies.join(", "))).size(14)
-                                        } else {
-                                            Text::new("No dependencies").size(14)
-                                        },
-                                    ],
-                                ]
-                                .spacing(10)
-                            )
-                            .padding(10)
-                            .style(style::panel_content)
-                            .into()
-                        }).collect::<Vec<Element<Message>>>()
-                    ).spacing(10)
-                ]
-                .spacing(20)
-            )
-            .padding(20)
-            .style(style::panel_content);
-
-            let action_buttons = container(
-                row![
-                    if workflow.status == WorkflowStatus::Ready {
-                        button(Text::new("Execute Workflow").size(16))
-                            .on_press(Message::ExecuteWorkflow(workflow.id.clone()))
-                            .padding(10)
-                            .style(button::primary)
-                    } else {
-                        button(Text::new("Workflow Running...").size(16))
-                            .padding(10)
-                            .style(button::secondary)
-                    },
-                    button(Text::new("Back to List").size(16))
-                        .on_press(Message::ViewWorkflowDetails(String::new()))
-                        .padding(10)
-                        .style(button::secondary),
-                ]
-                .spacing(15)
-            )
-            .padding(20)
-            .style(style::panel_content);
-
-            container(
-                column![
-                    header,
-                    steps_list,
-                    action_buttons,
-                ]
-                .spacing(20)
-            )
-            .padding(20)
-            .into()
-        } else {
-            container(
-                Text::new("Workflow not found")
-                    .size(32)
-                    .style(style::header_text)
-            )
-            .padding(20)
-            .style(style::panel_content)
-            .into()
-        }
-    }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SortOrder {
+    NameAsc,
+    NameDesc,
+    StatusAsc,
+    StatusDesc,
+    LastActiveAsc,
+    LastActiveDesc,
+}
+
+// Add dock item struct
 #[derive(Debug, Clone)]
-struct AgentConfigState {
-    max_concurrent_tasks: String,
-    priority_threshold: String,
-    llm_provider: String,
-    llm_model: String,
-    timeout_seconds: String,
-}
-
-impl Default for AgentConfigState {
-    fn default() -> Self {
-        Self {
-            max_concurrent_tasks: "4".to_string(),
-            priority_threshold: "0".to_string(),
-            llm_provider: "LMStudio".to_string(),
-            llm_model: "default".to_string(),
-            timeout_seconds: "30".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ConfigMessage {
-    UpdateMaxTasks(String),
-    UpdatePriority(String),
-    UpdateProvider(String),
-    UpdateModel(String),
-    UpdateTimeout(String),
-}
-
-impl Default for Example {
-    fn default() -> Self {
-        Example::new().0
-    }
-}
-
-fn handle_hotkey(key: keyboard::Key) -> Option<Message> {
-    use keyboard::key::{self, Key};
-    use pane_grid::{Axis, Direction};
-
-    match key.as_ref() {
-        Key::Character("v") => Some(Message::SplitFocused(Axis::Vertical)),
-        Key::Character("h") => Some(Message::SplitFocused(Axis::Horizontal)),
-        Key::Character("w") => Some(Message::CloseFocused),
-        Key::Named(key) => {
-            let direction = match key {
-                key::Named::ArrowUp => Some(Direction::Up),
-                key::Named::ArrowDown => Some(Direction::Down),
-                key::Named::ArrowLeft => Some(Direction::Left),
-                key::Named::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-
-            direction.map(Message::FocusAdjacent)
-        }
-        _ => None,
-    }
+struct DockItem {
+    name: String,
+    icon: String,
+    action: Message,
 }
 
 #[derive(Debug, Clone)]
@@ -1634,6 +469,12 @@ impl Pane {
             id,
             is_pinned: false,
         }
+    }
+}
+
+impl Default for Example {
+    fn default() -> Self {
+        Example::new().0
     }
 }
 
@@ -1691,7 +532,7 @@ mod style {
         }
     }
 
-    // New component-specific styles
+    // Component-specific styles
     pub fn dock_item(_theme: &Theme) -> container::Style {
         let colors = ThemeColors::light();
         
@@ -1800,22 +641,4 @@ mod style {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SortOrder {
-    NameAsc,
-    NameDesc,
-    StatusAsc,
-    StatusDesc,
-    LastActiveAsc,
-    LastActiveDesc,
-}
-
-// Add dock item struct
-#[derive(Debug, Clone)]
-struct DockItem {
-    name: String,
-    icon: &'static str,
-    action: Message,
 }
