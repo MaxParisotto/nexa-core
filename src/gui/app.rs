@@ -1,18 +1,12 @@
 use iced::keyboard;
-use log::debug;
-use iced::widget::pane_grid::{self};
 use iced::widget::{
-    button, column, container, row, scrollable, text, Text, Row,
-    text_input,
+    column, container, Text, Row,
 };
 use iced::{Element, Length, Size, Subscription, Task};
-use crate::models::agent::{Agent, AgentStatus, Task as AgentTask};
-use crate::cli::{self, AgentConfig, AgentWorkflow as Workflow, WorkflowStep, WorkflowStatus, LLMModel};
-use iced::Theme;
+use crate::models::agent::Agent;
+use crate::cli::{AgentConfig, LLMModel};
 use std::time::Duration;
-use iced::time;
-use chrono::{DateTime, Utc};
-use uuid::Uuid;
+
 use crate::gui::components::{
     agents, workflows, tasks, settings, logs, styles,
 };
@@ -21,8 +15,6 @@ use crate::gui::components::settings::LLMServerConfig;
 
 // Constants for UI configuration
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const LOG_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-const MAX_LOGS: usize = 1000;
 const DEFAULT_WINDOW_SIZE: Size = Size::new(1920.0, 1080.0);
 
 pub fn main() -> iced::Result {
@@ -34,6 +26,7 @@ pub fn main() -> iced::Result {
         .run()
 }
 
+/// Navigation views
 #[derive(Debug, Clone)]
 pub enum View {
     Agents,
@@ -43,13 +36,22 @@ pub enum View {
     Tasks,
 }
 
+/// LLM settings state
 #[derive(Debug, Clone)]
 struct LLMSettingsState {
     servers: Vec<LLMServerConfig>,
-    selected_provider: String,
     available_models: Vec<LLMModel>,
     new_server_url: String,
     new_server_provider: String,
+}
+
+/// Dock item for navigation
+#[derive(Debug, Clone)]
+struct DockItem {
+    name: String,
+    icon: String,
+    #[allow(dead_code)]
+    action: Message,
 }
 
 #[derive(Debug, Clone)]
@@ -80,49 +82,25 @@ pub enum TaskPriority {
     Critical,
 }
 
-struct Example {
-    panes: pane_grid::State<Pane>,
-    panes_created: usize,
-    focus: Option<pane_grid::Pane>,
+/// Main application state
+pub struct Example {
+    // Core state
+    #[allow(dead_code)]
     cli_handler: std::sync::Arc<crate::cli::CliHandler>,
+    current_view: View,
+    
+    // Component states
     agents: Vec<Agent>,
     selected_agent: Option<String>,
     logs: Vec<String>,
     config_state: AgentConfigState,
-    search_query: String,
-    sort_order: SortOrder,
-    dock_items: Vec<DockItem>,
     llm_settings: LLMSettingsState,
-    current_view: View,
-    workflows: Vec<Workflow>,
-    selected_workflow: Option<String>,
-    new_workflow_name: String,
-    new_workflow_steps: Vec<WorkflowStep>,
-    tasks: Vec<AgentTask>,
-    selected_task: Option<String>,
-    new_task_title: String,
-    new_task_description: String,
-    new_task_priority: i32,
-    new_task_agent: Option<String>,
-    new_task_deadline: Option<DateTime<Utc>>,
-    new_task_estimated_duration: i64,
+    dock_items: Vec<DockItem>,
 }
 
+/// Application messages
 #[derive(Debug, Clone)]
 pub enum Message {
-    // Layout Messages
-    Split(pane_grid::Axis, pane_grid::Pane),
-    SplitFocused(pane_grid::Axis),
-    FocusAdjacent(pane_grid::Direction),
-    Clicked(pane_grid::Pane),
-    Dragged(pane_grid::DragEvent),
-    Resized(pane_grid::ResizeEvent),
-    TogglePin(pane_grid::Pane),
-    Maximize(pane_grid::Pane),
-    Restore,
-    Close(pane_grid::Pane),
-    CloseFocused,
-    
     // Component Messages
     AgentMessage(agents::AgentMessage),
     WorkflowMessage(workflows::WorkflowMessage),
@@ -163,8 +141,6 @@ pub enum AgentControlAction {
 
 impl Example {
     fn new() -> (Self, Task<Message>) {
-        let (panes, _) = pane_grid::State::new(Pane::new(0));
-
         // Define default dock items
         let dock_items = vec![
             DockItem {
@@ -196,37 +172,19 @@ impl Example {
 
         (
             Example {
-                panes,
-                panes_created: 1,
-                focus: None,
                 cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
+                current_view: View::Agents,
                 agents: Vec::new(),
                 selected_agent: None,
                 logs: Vec::new(),
                 config_state: AgentConfigState::default(),
-                search_query: String::new(),
-                sort_order: SortOrder::NameAsc,
-                dock_items,
                 llm_settings: LLMSettingsState {
                     servers: Vec::new(),
-                    selected_provider: String::new(),
                     available_models: Vec::new(),
                     new_server_url: String::new(),
                     new_server_provider: String::new(),
                 },
-                current_view: View::Agents,
-                workflows: Vec::new(),
-                selected_workflow: None,
-                new_workflow_name: String::new(),
-                new_workflow_steps: Vec::new(),
-                tasks: Vec::new(),
-                selected_task: None,
-                new_task_title: String::new(),
-                new_task_description: String::new(),
-                new_task_priority: 50,
-                new_task_agent: None,
-                new_task_deadline: None,
-                new_task_estimated_duration: 3600,
+                dock_items,
             },
             Task::none(),
         )
@@ -268,55 +226,11 @@ impl Example {
             }
             Message::Batch(messages) => {
                 // Handle batch messages
+                let mut last_task = Task::none();
                 for message in messages {
-                    self.update(message);
+                    last_task = self.update(message);
                 }
-                Task::none()
-            }
-            // Layout messages
-            Message::Split(_axis, _pane) => {
-                // Handle split
-                Task::none()
-            }
-            Message::SplitFocused(_axis) => {
-                // Handle split focused
-                Task::none()
-            }
-            Message::FocusAdjacent(_direction) => {
-                // Handle focus adjacent
-                Task::none()
-            }
-            Message::Clicked(_pane) => {
-                // Handle click
-                Task::none()
-            }
-            Message::Dragged(_event) => {
-                // Handle drag
-                Task::none()
-            }
-            Message::Resized(_event) => {
-                // Handle resize
-                Task::none()
-            }
-            Message::TogglePin(_pane) => {
-                // Handle toggle pin
-                Task::none()
-            }
-            Message::Maximize(_pane) => {
-                // Handle maximize
-                Task::none()
-            }
-            Message::Restore => {
-                // Handle restore
-                Task::none()
-            }
-            Message::Close(_pane) => {
-                // Handle close
-                Task::none()
-            }
-            Message::CloseFocused => {
-                // Handle close focused
-                Task::none()
+                last_task
             }
         }
     }
@@ -332,6 +246,7 @@ impl Example {
                         container(
                             Text::new("Agent not found")
                                 .size(32)
+                                .style(styles::header_text)
                         )
                         .padding(20)
                         .style(styles::panel_content)
@@ -365,6 +280,7 @@ impl Example {
                     .spacing(20)
                 )
                 .padding(20)
+                .style(styles::panel_content)
                 .into()
             }
             View::Logs => {
@@ -439,206 +355,8 @@ impl Example {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SortOrder {
-    NameAsc,
-    NameDesc,
-    StatusAsc,
-    StatusDesc,
-    LastActiveAsc,
-    LastActiveDesc,
-}
-
-// Add dock item struct
-#[derive(Debug, Clone)]
-struct DockItem {
-    name: String,
-    icon: String,
-    action: Message,
-}
-
-#[derive(Debug, Clone)]
-struct Pane {
-    id: usize,
-    pub is_pinned: bool,
-}
-
-impl Pane {
-    fn new(id: usize) -> Self {
-        Self {
-            id,
-            is_pinned: false,
-        }
-    }
-}
-
 impl Default for Example {
     fn default() -> Self {
         Example::new().0
-    }
-}
-
-mod style {
-    use super::*;
-    use iced::{Border, Color, Shadow};
-    use iced::widget::container;
-    use crate::models::agent::AgentStatus;
-
-    // Modern color palette with semantic naming
-    pub struct ThemeColors {
-        pub background: Color,
-        pub surface: Color,
-        pub border: Color,
-        pub text: Color,
-    }
-
-    impl ThemeColors {
-        pub fn light() -> Self {
-            Self {
-                background: Color::from_rgb(0.98, 0.99, 1.00),
-                surface: Color::from_rgb(1.0, 1.0, 1.0),
-                border: Color::from_rgb(0.90, 0.92, 0.95),
-                text: Color::from_rgb(0.15, 0.18, 0.20),
-            }
-        }
-    }
-
-    // Reusable shadow definitions
-    pub struct Shadows {
-        pub small: Shadow,
-        pub medium: Shadow,
-        pub large: Shadow,
-    }
-
-    impl Shadows {
-        pub fn new() -> Self {
-            Self {
-                small: Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.08),
-                    offset: iced::Vector::new(0.0, 2.0),
-                    blur_radius: 8.0,
-                },
-                medium: Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.12),
-                    offset: iced::Vector::new(0.0, 4.0),
-                    blur_radius: 16.0,
-                },
-                large: Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.16),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
-                },
-            }
-        }
-    }
-
-    // Component-specific styles
-    pub fn dock_item(_theme: &Theme) -> container::Style {
-        let colors = ThemeColors::light();
-        
-        container::Style {
-            background: Some(colors.surface.into()),
-            border: Border {
-                width: 1.0,
-                color: colors.border,
-                radius: (12.0).into(),
-            },
-            shadow: Shadows::new().medium,
-            text_color: Some(colors.text),
-            ..Default::default()
-        }
-    }
-
-    pub fn dock(_theme: &Theme) -> container::Style {
-        let colors = ThemeColors::light();
-        
-        container::Style {
-            background: Some(colors.surface.into()),
-            border: Border {
-                width: 1.0,
-                color: colors.border,
-                radius: (20.0).into(),
-            },
-            shadow: Shadows::new().large,
-            ..Default::default()
-        }
-    }
-
-    pub fn main_container(_theme: &Theme) -> container::Style {
-        let colors = ThemeColors::light();
-        
-        container::Style {
-            background: Some(colors.background.into()),
-            border: Border {
-                width: 1.0,
-                color: colors.border,
-                radius: (16.0).into(),
-            },
-            shadow: Shadows::new().medium,
-            ..Default::default()
-        }
-    }
-
-    pub fn header_text(_theme: &Theme) -> iced::widget::text::Style {
-        let colors = ThemeColors::light();
-        
-        iced::widget::text::Style {
-            color: Some(colors.text),
-            ..Default::default()
-        }
-    }
-
-    pub fn panel_content(_theme: &Theme) -> container::Style {
-        let colors = ThemeColors::light();
-
-        container::Style {
-            background: Some(colors.surface.into()),
-            border: Border {
-                width: 1.0,
-                color: colors.border,
-                radius: (12.0).into(),
-            },
-            shadow: Shadows::new().small,
-            ..Default::default()
-        }
-    }
-
-    pub fn search_bar(_theme: &Theme) -> container::Style {
-        let colors = ThemeColors::light();
-
-        container::Style {
-            background: Some(colors.surface.into()),
-            border: Border {
-                width: 1.0,
-                color: colors.border,
-                radius: (10.0).into(),
-            },
-            shadow: Shadows::new().small,
-            ..Default::default()
-        }
-    }
-
-    pub fn status_badge_style(status: AgentStatus) -> impl Fn(&Theme) -> container::Style {
-        move |_theme: &Theme| {
-            let color = match status {
-                AgentStatus::Active => Color::from_rgb(0.2, 0.8, 0.4),  // Green
-                AgentStatus::Idle => Color::from_rgb(0.9, 0.7, 0.2),    // Yellow
-            };
-
-            container::Style {
-                background: Some(color.into()),
-                border: Border {
-                    width: 0.0,
-                    color: Color::TRANSPARENT,
-                    radius: (4.0).into(),
-                },
-                shadow: Shadow {
-                    color: Color::from_rgba(color.r, color.g, color.b, 0.3),
-                    offset: iced::Vector::new(0.0, 2.0),
-                    blur_radius: 4.0,
-                },
-                ..Default::default()
-            }
-        }
     }
 }
