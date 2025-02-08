@@ -64,6 +64,19 @@ impl ServerMetrics {
     }
 }
 
+impl Default for ServerMetrics {
+    fn default() -> Self {
+        Self {
+            total_connections: 0,
+            active_connections: 0,
+            failed_connections: 0,
+            last_error: None,
+            uptime: Duration::from_secs(0),
+            start_time: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Server {
     clients: Arc<RwLock<HashMap<Uuid, SystemTime>>>,
@@ -74,6 +87,7 @@ pub struct Server {
     active_connections: Arc<RwLock<usize>>,
     connected_clients: Arc<RwLock<HashMap<SocketAddr, SystemTime>>>,
     metrics: Arc<RwLock<ServerMetrics>>,
+    listener: Arc<RwLock<Option<TcpListener>>>,
 }
 
 impl Server {
@@ -91,60 +105,89 @@ impl Server {
             active_connections: Arc::new(RwLock::new(0)),
             connected_clients: Arc::new(RwLock::new(HashMap::new())),
             metrics: Arc::new(RwLock::new(initial_metrics)),
+            listener: Arc::new(RwLock::new(None)),
         }
     }
 
     pub async fn start(&self) -> Result<(), NexaError> {
-        if SERVER_RUNNING.load(Ordering::SeqCst) {
-            return Err(NexaError::System("Server is already running".to_string()));
+        let mut state = self.state.write().await;
+        if *state == ServerState::Running {
+            return Err(NexaError::Server("Server is already running".to_string()));
         }
+        *state = ServerState::Starting;
+        drop(state);
 
-        *self.state.write().await = ServerState::Starting;
-        
-        // Reset metrics when server starts
+        // Reset metrics
         let mut metrics = self.metrics.write().await;
+        *metrics = ServerMetrics::new();
         metrics.start_time = Some(SystemTime::now());
-        metrics.total_connections = 0;
-        metrics.active_connections = 0;
-        metrics.failed_connections = 0;
-        metrics.last_error = None;
         metrics.update_uptime();
-        drop(metrics);  // Explicitly drop the lock
+        drop(metrics);
 
+        // Start TCP listener
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
         let bound_addr = listener.local_addr()?;
         *self.bound_addr.write().await = Some(bound_addr);
+        *self.listener.write().await = Some(listener);
         
-        error!("WebSocket server listening on: {}", bound_addr);
-        
-        SERVER_RUNNING.store(true, Ordering::SeqCst);
-        *self.state.write().await = ServerState::Running;
-        
-        while SERVER_RUNNING.load(Ordering::SeqCst) {
-            if let Ok((stream, addr)) = listener.accept().await {
-                error!("New connection from: {}", addr);
-                let server = self.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = server.handle_connection(stream, addr).await {
-                        error!("Error handling connection: {}", e);
+        info!("WebSocket server listening on: {}", bound_addr);
+
+        // Update state to running
+        let mut state = self.state.write().await;
+        *state = ServerState::Running;
+        drop(state);
+
+        // Start server loop in a separate task
+        let server = self.clone();
+        tokio::spawn(async move {
+            if let Some(listener) = &*server.listener.read().await {
+                while *server.state.read().await == ServerState::Running {
+                    if let Ok((stream, addr)) = listener.accept().await {
+                        info!("New connection from: {}", addr);
+                        let server = server.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = server.handle_connection(stream, addr).await {
+                                error!("Error handling connection: {}", e);
+                                let mut metrics = server.metrics.write().await;
+                                metrics.failed_connections += 1;
+                                metrics.last_error = Some(e.to_string());
+                            }
+                        });
                     }
-                });
+                }
             }
-        }
-        
+        });
+
         Ok(())
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
-        if !SERVER_RUNNING.load(Ordering::SeqCst) {
-            return Err(NexaError::System("Server is not running".to_string()));
+        let mut state = self.state.write().await;
+        if *state == ServerState::Stopped {
+            return Err(NexaError::Server("Server is not running".to_string()));
         }
-        
-        *self.state.write().await = ServerState::Stopping;
-        SERVER_RUNNING.store(false, Ordering::SeqCst);
-        *self.state.write().await = ServerState::Stopped;
+        *state = ServerState::Stopping;
+        drop(state);
+
+        // Clear listener
+        *self.listener.write().await = None;
+
+        // Reset metrics
+        let mut metrics = self.metrics.write().await;
+        *metrics = ServerMetrics::default();
+        drop(metrics);
+
+        // Clear bound address
         *self.bound_addr.write().await = None;
+
+        // Clear connected clients
+        self.connected_clients.write().await.clear();
+        *self.active_connections.write().await = 0;
+
+        // Update state to stopped
+        let mut state = self.state.write().await;
+        *state = ServerState::Stopped;
         
         Ok(())
     }
@@ -160,23 +203,6 @@ impl Server {
     pub async fn get_metrics(&self) -> ServerMetrics {
         let mut metrics = self.metrics.write().await;
         metrics.update_uptime();
-        
-        // Update active connections count from actual state
-        let active_conns = *self.active_connections.read().await as u32;
-        if active_conns != metrics.active_connections {
-            debug!("Syncing active connections count: {} -> {}", 
-                metrics.active_connections, active_conns);
-            metrics.active_connections = active_conns;
-        }
-        
-        // Log current metrics state
-        debug!("Current server metrics - Total: {}, Active: {}, Failed: {}, Uptime: {:?}", 
-            metrics.total_connections,
-            metrics.active_connections,
-            metrics.failed_connections,
-            metrics.uptime
-        );
-        
         metrics.clone()
     }
 

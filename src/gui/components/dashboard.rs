@@ -129,6 +129,39 @@ pub fn view_dashboard<'a>(metrics: DashboardMetrics) -> Element<'a, Message> {
                     .spacing(20)
                     .padding(10)
             )
+            .push(
+                container(
+                    Text::new(format!("Server Status: {}", 
+                        if metrics.active_connections > 0 { "Running" } else { "Stopped" }))
+                        .size(14)
+                )
+                .padding(10)
+                .style(styles::panel_content)
+            )
+            .spacing(10)
+    )
+    .style(styles::panel_content);
+
+    let server_logs = container(
+        Column::new()
+            .push(Text::new("Server Logs").size(20))
+            .push(
+                container(
+                    Column::new()
+                        .push(Text::new(format!("Last Error: {}", 
+                            metrics.server_last_error.unwrap_or_else(|| "None".to_string())))
+                            .size(14))
+                        .push(Text::new(format!("Total Connections: {}", metrics.total_connections))
+                            .size(14))
+                        .push(Text::new(format!("Active Connections: {}", metrics.active_connections))
+                            .size(14))
+                        .push(Text::new(format!("Failed Connections: {}", metrics.failed_connections))
+                            .size(14))
+                        .spacing(5)
+                )
+                .padding(10)
+                .style(styles::panel_content)
+            )
             .spacing(10)
     )
     .style(styles::panel_content);
@@ -209,6 +242,7 @@ pub fn view_dashboard<'a>(metrics: DashboardMetrics) -> Element<'a, Message> {
         Column::new()
             .push(common::header("System Dashboard"))
             .push(server_control)
+            .push(server_logs)
             .push(server_metrics)
             .push(agent_metrics)
             .push(task_metrics)

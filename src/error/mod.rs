@@ -2,7 +2,7 @@ use thiserror::Error;
 use std::io;
 use tokio_tungstenite::tungstenite;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum NexaError {
     /// Represents a system-level error
     #[error("System error: {0}")]
@@ -24,19 +24,19 @@ pub enum NexaError {
     Agent(String),
     
     #[error("IO error: {0}")]
-    Io(#[from] io::Error),
+    Io(String),
     
     #[error("WebSocket error: {0}")]
-    WebSocket(#[from] tungstenite::Error),
+    WebSocket(String),
     
     #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(String),
     
     #[error("YAML error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(String),
     
     #[error("Control error: {0}")]
-    Control(#[from] ctrlc::Error),
+    Control(String),
 }
 
 impl From<&str> for NexaError {
@@ -48,5 +48,35 @@ impl From<&str> for NexaError {
 impl From<String> for NexaError {
     fn from(s: String) -> Self {
         NexaError::System(s)
+    }
+}
+
+impl From<io::Error> for NexaError {
+    fn from(e: io::Error) -> Self {
+        NexaError::Io(e.to_string())
+    }
+}
+
+impl From<tungstenite::Error> for NexaError {
+    fn from(e: tungstenite::Error) -> Self {
+        NexaError::WebSocket(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for NexaError {
+    fn from(e: serde_json::Error) -> Self {
+        NexaError::Json(e.to_string())
+    }
+}
+
+impl From<serde_yaml::Error> for NexaError {
+    fn from(e: serde_yaml::Error) -> Self {
+        NexaError::Yaml(e.to_string())
+    }
+}
+
+impl From<ctrlc::Error> for NexaError {
+    fn from(e: ctrlc::Error) -> Self {
+        NexaError::Control(e.to_string())
     }
 } 

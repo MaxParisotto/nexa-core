@@ -191,56 +191,43 @@ impl CliHandler {
 
     pub async fn start(&self, _addr: Option<&str>) -> Result<(), NexaError> {
         if self.is_server_running() {
-            println!("Server is already running");
+            debug!("Server is already running");
             return Ok(());
         }
 
+        // Start server in a separate tokio task
+        let server = self.server.clone();
+        tokio::spawn(async move {
+            if let Err(e) = server.start().await {
+                error!("Server error: {}", e);
+            }
+        });
+
+        // Write PID file after server starts
         fs::write(&self.pid_file, process::id().to_string())
             .map_err(|e| NexaError::System(format!("Failed to write PID file: {}", e)))?;
 
-        info!("Starting Nexa Core server");
-        self.server.start().await?;
-
+        info!("Started Nexa Core server");
         Ok(())
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
         if !self.is_server_running() {
-            println!("Server is not running");
+            debug!("Server is not running");
             return Ok(());
         }
 
+        // Stop the server gracefully
         if let Err(e) = self.server.stop().await {
             error!("Failed to stop server gracefully: {}", e);
         }
 
-        if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                if let Err(e) = signal::kill(Pid::from_raw(pid), Signal::SIGTERM) {
-                    error!("Failed to send SIGTERM to process {}: {}", pid, e);
-                }
-
-                let start = std::time::Instant::now();
-                let timeout = std::time::Duration::from_secs(5);
-                while start.elapsed() < timeout {
-                    if !self.is_server_running() {
-                        break;
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-
-                if self.is_server_running() {
-                    error!("Server did not stop gracefully, sending SIGKILL");
-                    let _ = signal::kill(Pid::from_raw(pid), Signal::SIGKILL);
-                }
-            }
-        }
-
+        // Clean up PID file
         if let Err(e) = fs::remove_file(&self.pid_file) {
             error!("Failed to remove PID file: {}", e);
         }
 
-        println!("Server stopped");
+        debug!("Stopped Nexa Core server");
         Ok(())
     }
 

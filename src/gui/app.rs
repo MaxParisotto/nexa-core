@@ -1,25 +1,39 @@
-use iced::keyboard;
-use log::debug;
-use iced::widget::{
-    column, container, Text, Row, button,
+use iced::{
+    keyboard,
+    widget::{
+        button, checkbox, column, container, horizontal_rule, horizontal_space, pick_list, row, text,
+        text_input, vertical_space, Text, Row,
+    },
+    Task,
+    Element, Length, Size, Subscription, window,
 };
-use iced::{Element, Length, Size, Subscription, Task as IcedTask};
-use crate::models::agent::{Agent, Task as AgentTask};
-use crate::cli::{AgentConfig, LLMModel};
-use crate::gui::components::dashboard::DashboardMetrics;
-use crate::settings::{SettingsManager, LLMServerConfig};
-use crate::server::{ServerMetrics, ServerState};
-use crate::gui::components::{
-    agents, workflows, tasks, settings, logs, styles, dashboard,
-};
-use crate::gui::components::agents::AgentConfigState;
-use std::time::Duration;
+use log::{debug, error, info};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use crate::logging;
+use std::path::PathBuf;
+
+use crate::{
+    server::{Server, ServerState, ServerMetrics},
+    models::agent::{Agent, Task as AgentTask},
+    cli::{AgentConfig, LLMModel},
+    gui::components::{
+        dashboard::{self, DashboardMetrics},
+        agents::{self, AgentConfigState},
+        workflows::{self},
+        tasks::{self},
+        settings::{self},
+        logs::{self},
+        styles,
+    },
+    settings::{SettingsManager, LLMServerConfig},
+    logging,
+    error::NexaError,
+    cli::CliHandler,
+};
 
 // Constants for UI configuration
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const DEFAULT_WINDOW_SIZE: Size = Size::new(1920.0, 1080.0);
+const DEFAULT_WINDOW_SIZE: Size = Size::new(1024.0, 768.0);
 const MAX_LOGS: usize = 1000;
 
 pub fn main() -> iced::Result {
@@ -119,6 +133,9 @@ pub struct Example {
     
     // Channels
     _log_receiver: mpsc::UnboundedReceiver<String>,
+    server: Server,
+    last_metrics_update: Instant,
+    state: ServerState,
 }
 
 /// Application messages
@@ -148,6 +165,9 @@ pub enum Message {
     
     // Logging
     LogReceived(String),
+    ServerStarted(Result<(), NexaError>),
+    ServerStopped(Result<(), NexaError>),
+    MetricsUpdated(ServerMetrics),
 }
 
 // New helper types for better code organization
@@ -174,7 +194,7 @@ pub enum AgentControlAction {
 }
 
 impl Example {
-    fn new() -> (Self, IcedTask<Message>) {
+    fn new() -> (Self, Task<Message>) {
         let settings_manager = SettingsManager::new();
         let settings = settings_manager.get().clone();
 
@@ -224,6 +244,11 @@ impl Example {
             },
         ];
 
+        let server = Server::new(
+            PathBuf::from("nexa.pid"),
+            PathBuf::from("nexa.sock"),
+        );
+
         (
             Example {
                 cli_handler: std::sync::Arc::new(crate::cli::CliHandler::new()),
@@ -243,8 +268,11 @@ impl Example {
                 tasks: Vec::new(),
                 server_metrics: ServerMetrics::new(),
                 _log_receiver: log_receiver,
+                server,
+                last_metrics_update: Instant::now(),
+                state: ServerState::Stopped,
             },
-            IcedTask::none(),
+            Task::none(),
         )
     }
 
@@ -252,7 +280,7 @@ impl Example {
         "Nexa Agent Management"
     }
 
-    fn update(&mut self, message: Message) -> IcedTask<Message> {
+    fn update(&mut self, message: Message) -> Task<Message> {
         debug!("Handling message: {:?}", message);
         
         match message {
@@ -260,53 +288,53 @@ impl Example {
                 match msg {
                     agents::AgentMessage::ViewDetails(id) => {
                         self.selected_agent = Some(id);
-                        IcedTask::none()
+                        Task::none()
                     }
                     agents::AgentMessage::Back => {
                         self.selected_agent = None;
-                        IcedTask::none()
+                        Task::none()
                     }
                     agents::AgentMessage::Start(id) => {
                         if let Some(_agent) = self.agents.iter_mut().find(|a| a.id == id) {
                             // Update agent status
                             debug!("Starting agent {}", id);
                         }
-                        IcedTask::none()
+                        Task::none()
                     }
                     agents::AgentMessage::Stop(id) => {
                         if let Some(_agent) = self.agents.iter_mut().find(|a| a.id == id) {
                             // Update agent status
                             debug!("Stopping agent {}", id);
                         }
-                        IcedTask::none()
+                        Task::none()
                     }
-                    _ => IcedTask::none()
+                    _ => Task::none()
                 }
             }
             Message::WorkflowMessage(msg) => {
                 match msg {
                     workflows::WorkflowMessage::ViewDetails(id) => {
                         debug!("Viewing workflow details {}", id);
-                        IcedTask::none()
+                        Task::none()
                     }
                     workflows::WorkflowMessage::Execute(id) => {
                         debug!("Executing workflow {}", id);
-                        IcedTask::none()
+                        Task::none()
                     }
-                    _ => IcedTask::none()
+                    _ => Task::none()
                 }
             }
             Message::TaskMessage(msg) => {
                 match msg {
                     tasks::TaskMessage::ViewDetails(id) => {
                         debug!("Viewing task details {}", id);
-                        IcedTask::none()
+                        Task::none()
                     }
                     tasks::TaskMessage::UpdateStatus(id, status) => {
                         debug!("Updating task {} status to {:?}", id, status);
-                        IcedTask::none()
+                        Task::none()
                     }
-                    _ => IcedTask::none()
+                    _ => Task::none()
                 }
             }
             Message::SettingsMessage(msg) => {
@@ -326,7 +354,7 @@ impl Example {
 
                         self.llm_settings.new_server_url.clear();
                         self.llm_settings.new_server_provider.clear();
-                        IcedTask::none()
+                        Task::none()
                     }
                     settings::SettingsMessage::RemoveServer(provider) => {
                         self.llm_settings.servers.retain(|s| s.provider != provider);
@@ -335,17 +363,17 @@ impl Example {
                         let _ = self.settings_manager.update(|settings| {
                             settings.llm_servers.retain(|s| s.provider != provider);
                         });
-                        IcedTask::none()
+                        Task::none()
                     }
                     settings::SettingsMessage::UpdateNewServerUrl(url) => {
                         self.llm_settings.new_server_url = url;
-                        IcedTask::none()
+                        Task::none()
                     }
                     settings::SettingsMessage::UpdateNewServerProvider(provider) => {
                         self.llm_settings.new_server_provider = provider;
-                        IcedTask::none()
+                        Task::none()
                     }
-                    _ => IcedTask::none()
+                    _ => Task::none()
                 }
             }
             Message::LogMessage(msg) => {
@@ -353,7 +381,7 @@ impl Example {
                     logs::LogMessage::Clear => {
                         debug!("Clearing logs from UI");
                         self.logs.clear();
-                        IcedTask::none()
+                        Task::none()
                     }
                     logs::LogMessage::Show(log) => {
                         debug!("Adding log to UI: {}", log);
@@ -361,7 +389,7 @@ impl Example {
                         if self.logs.len() > MAX_LOGS {
                             self.logs.remove(0);
                         }
-                        IcedTask::none()
+                        Task::none()
                     }
                 }
             }
@@ -370,49 +398,36 @@ impl Example {
                 if self.logs.len() > self.settings_manager.get().max_logs {
                     self.logs.remove(0);
                 }
-                IcedTask::none()
+                Task::none()
             }
             Message::ChangeView(view) => {
                 debug!("Changing view to: {:?}", view);
                 self.current_view = view;
-                IcedTask::none()
+                Task::none()
             }
             Message::Tick => {
-                // Try to receive any pending log messages
-                while let Ok(log) = self._log_receiver.try_recv() {
-                    self.logs.push(log);
-                    if self.logs.len() > self.settings_manager.get().max_logs {
-                        self.logs.remove(0);
-                    }
+                if self.state == ServerState::Running && 
+                   self.last_metrics_update.elapsed() >= Duration::from_secs(1) {
+                    let server = self.server.clone();
+                    self.last_metrics_update = Instant::now();
+                    Task::perform(async move {
+                        server.get_metrics().await
+                    }, Message::MetricsUpdated)
+                } else {
+                    Task::none()
                 }
-                
-                // Update metrics periodically
-                let cli = self.cli_handler.clone();
-                IcedTask::perform(
-                    async move {
-                        let metrics = cli.get_server().get_metrics().await;
-                        Ok::<ServerMetrics, String>(metrics)
-                    },
-                    |result| match result {
-                        Ok(metrics) => Message::UpdateServerMetrics(metrics),
-                        Err(e) => {
-                            debug!("Failed to update metrics: {}", e);
-                            Message::LogReceived(format!("Error updating metrics: {}", e))
-                        }
-                    }
-                )
             }
             Message::UpdateServerMetrics(metrics) => {
                 self.server_metrics = metrics;
-                IcedTask::none()
+                Task::none()
             }
             Message::UpdateAgents(agents) => {
                 self.agents = agents;
-                IcedTask::none()
+                Task::none()
             }
             Message::UpdateModels(models) => {
                 self.llm_settings.available_models = models;
-                IcedTask::none()
+                Task::none()
             }
             Message::Batch(messages) => {
                 for message in messages {
@@ -424,66 +439,76 @@ impl Example {
                         self.llm_settings.available_models = models;
                     }
                 }
-                IcedTask::none()
+                Task::none()
             }
             Message::StartServer => {
-                debug!("Starting server...");
-                let cli = self.cli_handler.clone();
-                IcedTask::perform(
-                    async move {
-                        match cli.start(None).await {
-                            Ok(_) => Ok(ServerState::Running),
-                            Err(e) => Err(e.to_string())
-                        }
-                    },
-                    |result| match result {
-                        Ok(state) => {
+                self.logs.push("Starting server...".to_string());
+                let server = self.server.clone();
+                Task::perform(async move {
+                    match server.start().await {
+                        Ok(_) => {
                             debug!("Server started successfully");
-                            Message::ServerStateChanged(state)
-                        },
+                            Ok(())
+                        }
                         Err(e) => {
-                            debug!("Failed to start server: {}", e);
-                            Message::LogReceived(format!("Failed to start server: {}", e))
+                            error!("Failed to start server: {}", e);
+                            Err(e)
                         }
                     }
-                )
+                }, Message::ServerStarted)
             }
             Message::StopServer => {
-                debug!("Stopping server...");
-                let cli = self.cli_handler.clone();
-                IcedTask::perform(
-                    async move {
-                        match cli.stop().await {
-                            Ok(_) => Ok(ServerState::Stopped),
-                            Err(e) => Err(e.to_string())
-                        }
-                    },
-                    |result| match result {
-                        Ok(state) => {
+                self.logs.push("Stopping server...".to_string());
+                let server = self.server.clone();
+                Task::perform(async move {
+                    match server.stop().await {
+                        Ok(_) => {
                             debug!("Server stopped successfully");
-                            Message::ServerStateChanged(state)
-                        },
+                            Ok(())
+                        }
                         Err(e) => {
-                            debug!("Failed to stop server: {}", e);
-                            Message::LogReceived(format!("Failed to stop server: {}", e))
+                            error!("Failed to stop server: {}", e);
+                            Err(e)
                         }
                     }
-                )
+                }, Message::ServerStopped)
+            }
+            Message::ServerStarted(result) => {
+                match result {
+                    Ok(_) => {
+                        self.logs.push("Server started successfully".to_string());
+                        self.state = ServerState::Running;
+                    }
+                    Err(e) => {
+                        self.logs.push(format!("Failed to start server: {}", e));
+                        self.state = ServerState::Stopped;
+                    }
+                }
+                Task::none()
+            }
+            Message::ServerStopped(result) => {
+                match result {
+                    Ok(_) => {
+                        self.logs.push("Server stopped successfully".to_string());
+                        self.state = ServerState::Stopped;
+                        self.server_metrics = ServerMetrics::default();
+                    }
+                    Err(e) => {
+                        self.logs.push(format!("Failed to stop server: {}", e));
+                    }
+                }
+                Task::none()
+            }
+            Message::MetricsUpdated(metrics) => {
+                self.server_metrics = metrics;
+                Task::none()
             }
             Message::ServerStateChanged(state) => {
                 debug!("Server state changed to: {:?}", state);
-                let cli = self.cli_handler.clone();
-                IcedTask::perform(
-                    async move {
-                        let metrics = cli.get_server().get_metrics().await;
-                        Ok::<ServerMetrics, String>(metrics)
-                    },
-                    |result| match result {
-                        Ok(metrics) => Message::UpdateServerMetrics(metrics),
-                        Err(e) => Message::LogReceived(format!("Error updating metrics: {}", e))
-                    }
-                )
+                self.state = state;
+                Task::none()
             }
+            _ => Task::none()
         }
     }
 
