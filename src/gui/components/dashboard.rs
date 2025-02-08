@@ -1,9 +1,9 @@
 use std::time::Duration;
-use iced::widget::{container, Column, Row, Text, button};
-use iced::{Element, Length, theme};
+use iced::widget::{container, Column, Row, Text};
+use iced::{Element, Length};
 use crate::models::agent::{Agent, TaskStatus};
 use crate::cli::LLMModel;
-use crate::server::{ServerMetrics, ServerState};
+use crate::server::ServerMetrics;
 use crate::settings::LLMServerConfig;
 use crate::gui::components::{common, styles};
 use crate::gui::app::Message;

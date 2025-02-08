@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Once;
-use chrono::Local;
 use std::fs;
 use std::sync::Mutex;
-use log::{Record, Level, Metadata, Log};
 use tracing_subscriber::{fmt, EnvFilter, prelude::*};
 use std::time::Duration;
 use tokio::time;
@@ -23,35 +21,6 @@ pub fn set_ui_sender(sender: mpsc::UnboundedSender<String>) {
     *ui_sender = Some(sender);
 }
 
-struct UILogger;
-
-impl Log for UILogger {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Debug
-    }
-
-    fn log(&self, record: &Record) {
-        if self.enabled(record.metadata()) {
-            let log_line = format!("[{}] {} - {}: {}", 
-                Local::now().format("%Y-%m-%d %H:%M:%S"),
-                record.target(),
-                record.level(),
-                record.args()
-            );
-            
-            if let Ok(ui_sender) = UI_SENDER.lock() {
-                if let Some(sender) = ui_sender.as_ref() {
-                    if let Err(e) = sender.send(log_line.clone()) {
-                        eprintln!("Failed to send log to UI: {}", e);
-                    }
-                }
-            }
-        }
-    }
-
-    fn flush(&self) {}
-}
-
 pub fn init(log_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     INIT.call_once(|| {
         // Create log directory if it doesn't exist
@@ -69,6 +38,7 @@ pub fn init(log_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         let subscriber = tracing_subscriber::registry()
             .with(
                 fmt::Layer::new()
+                    .with_writer(std::io::stdout)
                     .with_file(true)
                     .with_line_number(true)
                     .with_thread_ids(true)
@@ -79,8 +49,8 @@ pub fn init(log_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             )
             .with(
                 fmt::Layer::new()
-                    .json()
                     .with_writer(file_appender)
+                    .json()
                     .with_file(true)
                     .with_line_number(true)
                     .with_thread_ids(true)

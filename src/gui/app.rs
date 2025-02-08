@@ -427,18 +427,63 @@ impl Example {
                 IcedTask::none()
             }
             Message::StartServer => {
-                // Implementation of StartServer
-                IcedTask::none()
+                debug!("Starting server...");
+                let cli = self.cli_handler.clone();
+                IcedTask::perform(
+                    async move {
+                        match cli.start(None).await {
+                            Ok(_) => Ok(ServerState::Running),
+                            Err(e) => Err(e.to_string())
+                        }
+                    },
+                    |result| match result {
+                        Ok(state) => {
+                            debug!("Server started successfully");
+                            Message::ServerStateChanged(state)
+                        },
+                        Err(e) => {
+                            debug!("Failed to start server: {}", e);
+                            Message::LogReceived(format!("Failed to start server: {}", e))
+                        }
+                    }
+                )
             }
             Message::StopServer => {
-                // Implementation of StopServer
-                IcedTask::none()
+                debug!("Stopping server...");
+                let cli = self.cli_handler.clone();
+                IcedTask::perform(
+                    async move {
+                        match cli.stop().await {
+                            Ok(_) => Ok(ServerState::Stopped),
+                            Err(e) => Err(e.to_string())
+                        }
+                    },
+                    |result| match result {
+                        Ok(state) => {
+                            debug!("Server stopped successfully");
+                            Message::ServerStateChanged(state)
+                        },
+                        Err(e) => {
+                            debug!("Failed to stop server: {}", e);
+                            Message::LogReceived(format!("Failed to stop server: {}", e))
+                        }
+                    }
+                )
             }
             Message::ServerStateChanged(state) => {
-                // Implementation of ServerStateChanged
-                IcedTask::none()
+                debug!("Server state changed to: {:?}", state);
+                let cli = self.cli_handler.clone();
+                IcedTask::perform(
+                    async move {
+                        let metrics = cli.get_server().get_metrics().await;
+                        Ok::<ServerMetrics, String>(metrics)
+                    },
+                    |result| match result {
+                        Ok(metrics) => Message::UpdateServerMetrics(metrics),
+                        Err(e) => Message::LogReceived(format!("Error updating metrics: {}", e))
+                    }
+                )
             }
-            _ => IcedTask::none()
         }
     }
 
