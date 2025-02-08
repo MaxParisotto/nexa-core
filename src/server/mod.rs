@@ -9,7 +9,7 @@ use tokio::{
     sync::RwLock,
     net::{TcpListener, TcpStream},
 };
-use log::error;
+use log::{error, info, debug};
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::protocol::Message,
@@ -40,6 +40,7 @@ pub struct ServerMetrics {
     pub failed_connections: u64,
     pub last_error: Option<String>,
     pub uptime: Duration,
+    pub start_time: Option<SystemTime>,
 }
 
 impl ServerMetrics {
@@ -50,6 +51,15 @@ impl ServerMetrics {
             failed_connections: 0,
             last_error: None,
             uptime: Duration::from_secs(0),
+            start_time: None,
+        }
+    }
+
+    pub fn update_uptime(&mut self) {
+        if let Some(start) = self.start_time {
+            if let Ok(duration) = SystemTime::now().duration_since(start) {
+                self.uptime = duration;
+            }
         }
     }
 }
@@ -68,6 +78,10 @@ pub struct Server {
 
 impl Server {
     pub fn new(_pid_file: PathBuf, _socket_path: PathBuf) -> Self {
+        let mut initial_metrics = ServerMetrics::new();
+        initial_metrics.start_time = Some(SystemTime::now());
+        initial_metrics.update_uptime();
+
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             port: 8085,
@@ -76,7 +90,7 @@ impl Server {
             max_connections: 100,
             active_connections: Arc::new(RwLock::new(0)),
             connected_clients: Arc::new(RwLock::new(HashMap::new())),
-            metrics: Arc::new(RwLock::new(ServerMetrics::new())),
+            metrics: Arc::new(RwLock::new(initial_metrics)),
         }
     }
 
@@ -86,6 +100,16 @@ impl Server {
         }
 
         *self.state.write().await = ServerState::Starting;
+        
+        // Reset metrics when server starts
+        let mut metrics = self.metrics.write().await;
+        metrics.start_time = Some(SystemTime::now());
+        metrics.total_connections = 0;
+        metrics.active_connections = 0;
+        metrics.failed_connections = 0;
+        metrics.last_error = None;
+        metrics.update_uptime();
+        drop(metrics);  // Explicitly drop the lock
 
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
@@ -134,35 +158,83 @@ impl Server {
     }
 
     pub async fn get_metrics(&self) -> ServerMetrics {
-        self.metrics.read().await.clone()
+        let mut metrics = self.metrics.write().await;
+        metrics.update_uptime();
+        
+        // Update active connections count from actual state
+        let active_conns = *self.active_connections.read().await as u32;
+        if active_conns != metrics.active_connections {
+            debug!("Syncing active connections count: {} -> {}", 
+                metrics.active_connections, active_conns);
+            metrics.active_connections = active_conns;
+        }
+        
+        // Log current metrics state
+        debug!("Current server metrics - Total: {}, Active: {}, Failed: {}, Uptime: {:?}", 
+            metrics.total_connections,
+            metrics.active_connections,
+            metrics.failed_connections,
+            metrics.uptime
+        );
+        
+        metrics.clone()
     }
 
     async fn handle_connection(&self, socket: TcpStream, addr: SocketAddr) -> Result<(), NexaError> {
         let active_conns = self.get_active_connections().await;
         
         if active_conns >= self.max_connections {
+            let mut metrics = self.metrics.write().await;
+            metrics.failed_connections += 1;
+            metrics.last_error = Some("Maximum connections reached".to_string());
+            error!("Connection rejected: maximum connections ({}) reached", self.max_connections);
             return Err(NexaError::Server("Maximum connections reached".to_string()));
         }
 
-        socket.set_nodelay(true)?;
+        if let Err(e) = socket.set_nodelay(true) {
+            let mut metrics = self.metrics.write().await;
+            metrics.failed_connections += 1;
+            metrics.last_error = Some(e.to_string());
+            error!("Failed to set TCP_NODELAY: {}", e);
+            return Err(NexaError::from(e));
+        }
         
-        let ws_stream = accept_async(socket).await?;
+        let ws_stream = match accept_async(socket).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                let mut metrics = self.metrics.write().await;
+                metrics.failed_connections += 1;
+                metrics.last_error = Some(e.to_string());
+                error!("WebSocket handshake failed: {}", e);
+                return Err(NexaError::from(e));
+            }
+        };
+        
         let (write_half, read_half) = ws_stream.split();
         
         {
             let mut metrics = self.metrics.write().await;
             metrics.total_connections += 1;
             metrics.active_connections += 1;
+            info!("New connection established - Total: {}, Active: {}, Failed: {}", 
+                metrics.total_connections, 
+                metrics.active_connections, 
+                metrics.failed_connections
+            );
         }
         *self.active_connections.write().await += 1;
         self.connected_clients.write().await.insert(addr, SystemTime::now());
 
+        debug!("Processing WebSocket connection from {}", addr);
         self.process_ws_connection(read_half, write_half, addr).await?;
 
         self.connected_clients.write().await.remove(&addr);
         *self.active_connections.write().await -= 1;
-        let mut metrics = self.metrics.write().await;
-        metrics.active_connections -= 1;
+        {
+            let mut metrics = self.metrics.write().await;
+            metrics.active_connections -= 1;
+            debug!("Connection closed - Active: {}", metrics.active_connections);
+        }
 
         Ok(())
     }

@@ -52,11 +52,27 @@ impl DashboardMetrics {
             .filter(|a| a.status == crate::models::agent::AgentStatus::Active)
             .count();
             
-        // Since Agent metrics are now in cli::Agent, we'll use default values
-        // TODO: Implement proper metrics tracking
-        let tasks_completed = 0;
-        let tasks_failed = 0;
-        let average_response_time = 0.0;
+        // Calculate task metrics from actual tasks
+        let tasks_completed = tasks.iter()
+            .filter(|t| t.status == TaskStatus::Completed)
+            .count() as u64;
+            
+        let tasks_failed = tasks.iter()
+            .filter(|t| t.status == TaskStatus::Failed)
+            .count() as u64;
+            
+        // Calculate average response time (if task has a completion time)
+        let average_response_time = tasks.iter()
+            .filter(|t| t.status == TaskStatus::Completed)
+            .filter_map(|t| t.deadline.map(|d| d - t.created_at))
+            .map(|d| d.num_milliseconds() as f64)
+            .fold((0.0, 0), |(sum, count), time| (sum + time, count + 1));
+            
+        let average_response_time = if average_response_time.1 > 0 {
+            average_response_time.0 / average_response_time.1 as f64
+        } else {
+            0.0
+        };
         
         let tasks_by_status = tasks.iter()
             .fold((0, 0, 0, 0), |acc, task| {

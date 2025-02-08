@@ -132,6 +132,9 @@ pub enum Message {
     
     // System
     Batch(Vec<Message>),
+    UpdateServerMetrics(ServerMetrics),
+    UpdateAgents(Vec<Agent>),
+    UpdateModels(Vec<LLMModel>),
 }
 
 // New helper types for better code organization
@@ -342,15 +345,68 @@ impl Example {
                 IcedTask::none()
             }
             Message::Tick => {
-                // Periodic updates
+                let cli_handler = self.cli_handler.clone();
+                let servers = self.llm_settings.servers.clone();
+                
+                IcedTask::perform(
+                    async move {
+                        let mut messages = Vec::new();
+                        
+                        // Update server metrics
+                        let metrics = cli_handler.get_server().get_metrics().await;
+                        messages.push(Message::UpdateServerMetrics(metrics));
+                        
+                        // Update agents list
+                        if let Ok(cli_agents) = cli_handler.list_agents(None).await {
+                            let agents = cli_agents.into_iter()
+                                .map(Agent::from_cli_agent)
+                                .collect();
+                            messages.push(Message::UpdateAgents(agents));
+                        }
+                        
+                        // Update LLM models for each server
+                        let mut all_models = Vec::new();
+                        for server in servers {
+                            if let Ok(models) = cli_handler.list_models(&server.provider).await {
+                                all_models.extend(models);
+                            }
+                        }
+                        messages.push(Message::UpdateModels(all_models));
+                        
+                        Message::Batch(messages)
+                    },
+                    |result| result
+                )
+            }
+            Message::UpdateServerMetrics(metrics) => {
+                self.server_metrics = metrics;
+                IcedTask::none()
+            }
+            Message::UpdateAgents(agents) => {
+                self.agents = agents;
+                IcedTask::none()
+            }
+            Message::UpdateModels(models) => {
+                self.llm_settings.available_models = models;
                 IcedTask::none()
             }
             Message::Batch(messages) => {
-                let mut last_task = IcedTask::none();
+                // Process each message immediately instead of chaining
                 for message in messages {
-                    last_task = self.update(message);
+                    match message {
+                        Message::UpdateServerMetrics(metrics) => {
+                            self.server_metrics = metrics;
+                        }
+                        Message::UpdateAgents(agents) => {
+                            self.agents = agents;
+                        }
+                        Message::UpdateModels(models) => {
+                            self.llm_settings.available_models = models;
+                        }
+                        _ => {}
+                    }
                 }
-                last_task
+                IcedTask::none()
             }
         }
     }
