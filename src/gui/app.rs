@@ -7,7 +7,7 @@ use iced::widget::{
 };
 use iced::{Element, Length, Size, Subscription, Task};
 use crate::models::agent::Agent;
-use crate::cli::AgentConfig;
+use crate::cli::{self, AgentConfig, AgentWorkflow, WorkflowStep, WorkflowStatus};
 use iced::Theme;
 use std::time::Duration;
 use iced::time;
@@ -32,6 +32,7 @@ pub enum View {
     Agents,
     Settings,
     Logs,
+    Workflows,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +75,10 @@ struct Example {
     dock_items: Vec<DockItem>,
     llm_settings: LLMSettingsState,
     current_view: View,
+    workflows: Vec<AgentWorkflow>,
+    selected_workflow: Option<String>,
+    new_workflow_name: String,
+    new_workflow_steps: Vec<WorkflowStep>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,16 +138,20 @@ pub enum Message {
     ShowLogs(String),
     ClearLogs,
     Batch(Vec<Message>),
+    
+    // Workflow Management
+    CreateWorkflow(String, Vec<WorkflowStep>),
+    ExecuteWorkflow(String),
+    ListWorkflows,
+    WorkflowsUpdated(Vec<AgentWorkflow>),
+    ViewWorkflowDetails(String),
+    AddWorkflowStep(WorkflowStep),
+    RemoveWorkflowStep(usize),
+    UpdateWorkflowName(String),
+    WorkflowStatusChanged(String, WorkflowStatus),
 }
 
 // New helper types for better code organization
-#[derive(Debug, Clone)]
-pub enum AgentAction {
-    Start(String),
-    Stop(String),
-    Update(String, AgentConfig),
-}
-
 #[derive(Debug, Clone)]
 pub enum LLMAction {
     Connect { provider: String, url: String },
@@ -158,6 +167,13 @@ pub enum ConfigUpdate {
     Timeout(u32),
 }
 
+#[derive(Debug, Clone)]
+pub enum AgentControlAction {
+    Start(String),
+    Stop(String),
+    Update(String, AgentConfig),
+}
+
 impl Example {
     fn new() -> (Self, Task<Message>) {
         let (panes, _) = pane_grid::State::new(Pane::new(0));
@@ -168,6 +184,11 @@ impl Example {
                 name: "Agents".to_string(),
                 icon: "👥",
                 action: Message::ChangeView(View::Agents),
+            },
+            DockItem {
+                name: "Workflows".to_string(),
+                icon: "🔄",
+                action: Message::ChangeView(View::Workflows),
             },
             DockItem {
                 name: "Settings".to_string(),
@@ -202,6 +223,10 @@ impl Example {
                     new_server_provider: String::new(),
                 },
                 current_view: View::Agents,
+                workflows: Vec::new(),
+                selected_workflow: None,
+                new_workflow_name: String::new(),
+                new_workflow_steps: Vec::new(),
             },
             Task::none(),
         )
@@ -607,6 +632,71 @@ impl Example {
                 }
                 Task::none()
             }
+            Message::CreateWorkflow(name, steps) => {
+                let handler = self.cli_handler.clone();
+                Task::perform(
+                    async move {
+                        match handler.create_workflow(name, steps).await {
+                            Ok(_) => Message::ListWorkflows,
+                            Err(e) => Message::ShowLogs(format!("Failed to create workflow: {}", e))
+                        }
+                    },
+                    |msg| msg
+                )
+            }
+            Message::ExecuteWorkflow(id) => {
+                let handler = self.cli_handler.clone();
+                let workflow_id = id.clone();
+                Task::perform(
+                    async move {
+                        match handler.execute_workflow(&workflow_id).await {
+                            Ok(_) => Message::WorkflowStatusChanged(id, WorkflowStatus::Running),
+                            Err(e) => Message::ShowLogs(format!("Failed to execute workflow: {}", e))
+                        }
+                    },
+                    |msg| msg
+                )
+            }
+            Message::ListWorkflows => {
+                let handler = self.cli_handler.clone();
+                Task::perform(
+                    async move {
+                        match handler.list_workflows().await {
+                            Ok(workflows) => Message::WorkflowsUpdated(workflows),
+                            Err(e) => Message::ShowLogs(format!("Failed to list workflows: {}", e))
+                        }
+                    },
+                    |msg| msg
+                )
+            }
+            Message::WorkflowsUpdated(workflows) => {
+                self.workflows = workflows;
+                Task::none()
+            }
+            Message::ViewWorkflowDetails(id) => {
+                self.selected_workflow = Some(id);
+                Task::none()
+            }
+            Message::AddWorkflowStep(step) => {
+                self.new_workflow_steps.push(step);
+                Task::none()
+            }
+            Message::RemoveWorkflowStep(index) => {
+                if index < self.new_workflow_steps.len() {
+                    self.new_workflow_steps.remove(index);
+                }
+                Task::none()
+            }
+            Message::UpdateWorkflowName(name) => {
+                self.new_workflow_name = name;
+                Task::none()
+            }
+            Message::WorkflowStatusChanged(id, status) => {
+                if let Some(workflow) = self.workflows.iter_mut().find(|w| w.id == id) {
+                    workflow.status = status;
+                }
+                Task::none()
+            }
         }
     }
 
@@ -615,6 +705,7 @@ impl Example {
             View::Agents => self.view_agent_panel(),
             View::Settings => self.view_settings(),
             View::Logs => self.view_logs_panel(),
+            View::Workflows => self.view_workflow_panel(),
         };
 
         let dock_items: Vec<Element<Message>> = self.dock_items.iter().map(|item| {
@@ -671,6 +762,8 @@ impl Example {
             }),
             time::every(REFRESH_INTERVAL)
                 .map(|_| Message::RefreshAgents),
+            time::every(Duration::from_secs(10))
+                .map(|_| Message::ListWorkflows),
             self.log_subscription(),
         ])
     }
@@ -1220,6 +1313,246 @@ impl Example {
         } else {
             container(
                 Text::new("Select an agent to view details")
+                    .size(32)
+                    .style(style::header_text)
+            )
+            .padding(20)
+            .style(style::panel_content)
+            .into()
+        }
+    }
+
+    fn view_workflow_panel(&self) -> Element<Message> {
+        match &self.selected_workflow {
+            Some(workflow_id) => self.view_workflow_details(workflow_id),
+            None => {
+                let header = container(
+                    Text::new("Workflow Management")
+                        .size(32)
+                        .style(style::header_text)
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let new_workflow_form = container(
+                    column![
+                        Text::new("Create New Workflow")
+                            .size(24)
+                            .style(style::header_text),
+                        row![
+                            text_input("Workflow Name", &self.new_workflow_name)
+                                .on_input(Message::UpdateWorkflowName)
+                                .padding(10)
+                                .size(16),
+                        ].spacing(15),
+                        // Add step configuration
+                        Text::new("Configure Steps")
+                            .size(20)
+                            .style(style::header_text),
+                        column(
+                            self.new_workflow_steps.iter().enumerate().map(|(index, step)| {
+                                container(
+                                    row![
+                                        Text::new(format!("Step {}", index + 1)).size(16),
+                                        Text::new(format!("Agent: {}", step.agent_id)).size(16),
+                                        match &step.action {
+                                            cli::AgentAction::ProcessText { input, .. } => 
+                                                Text::new(format!("Process Text: {}", input)),
+                                            cli::AgentAction::GenerateCode { prompt, language } => 
+                                                Text::new(format!("Generate {} Code: {}", language, prompt)),
+                                            cli::AgentAction::AnalyzeCode { code, aspects } => 
+                                                Text::new(format!("Analyze Code: {} ({})", code, aspects.join(", "))),
+                                            cli::AgentAction::CustomTask { task_type, parameters } => 
+                                                Text::new(format!("Custom Task: {} - {:?}", task_type, parameters)),
+                                        }.size(14),
+                                        button(Text::new("Remove").size(14))
+                                            .on_press(Message::RemoveWorkflowStep(index))
+                                            .style(button::danger)
+                                    ]
+                                    .spacing(10)
+                                )
+                                .padding(10)
+                                .style(style::panel_content)
+                                .into()
+                            }).collect::<Vec<Element<Message>>>()
+                        ).spacing(10),
+                        button(Text::new("Add Step").size(16))
+                            .on_press(Message::AddWorkflowStep(WorkflowStep {
+                                agent_id: String::new(),
+                                action: cli::AgentAction::ProcessText {
+                                    input: String::new(),
+                                    _max_tokens: 100,
+                                },
+                                dependencies: Vec::new(),
+                                retry_policy: None,
+                                timeout_seconds: None,
+                            }))
+                            .padding(10)
+                            .style(button::secondary),
+                        button(Text::new("Create Workflow").size(16))
+                            .on_press(Message::CreateWorkflow(
+                                self.new_workflow_name.clone(),
+                                self.new_workflow_steps.clone()
+                            ))
+                            .padding(10)
+                            .style(button::primary)
+                            .width(Length::Fill),
+                    ]
+                    .spacing(20)
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let workflows_list = container(
+                    column(
+                        self.workflows.iter().map(|workflow| {
+                            container(
+                                column![
+                                    row![
+                                        Text::new(&workflow.name).size(20).style(style::header_text),
+                                        Text::new(format!("Status: {:?}", workflow.status)).size(16),
+                                        if workflow.status == WorkflowStatus::Ready {
+                                            button(Text::new("Execute").size(16))
+                                                .on_press(Message::ExecuteWorkflow(workflow.id.clone()))
+                                                .style(button::primary)
+                                        } else {
+                                            button(Text::new("View Details").size(16))
+                                                .on_press(Message::ViewWorkflowDetails(workflow.id.clone()))
+                                                .style(button::secondary)
+                                        },
+                                    ].spacing(15),
+                                    if let Some(last_run) = workflow.last_run {
+                                        Text::new(format!("Last Run: {}", last_run.format("%Y-%m-%d %H:%M:%S"))).size(14)
+                                    } else {
+                                        Text::new("Never executed").size(14)
+                                    },
+                                    Text::new(format!("Steps: {}", workflow.steps.len())).size(14),
+                                ]
+                                .spacing(10)
+                            )
+                            .padding(15)
+                            .style(style::panel_content)
+                            .into()
+                        }).collect::<Vec<Element<Message>>>()
+                    ).spacing(20)
+                )
+                .padding(20)
+                .style(style::panel_content);
+
+                let refresh_button = button(
+                    Text::new("Refresh Workflows")
+                        .size(16)
+                )
+                .on_press(Message::ListWorkflows)
+                .padding(15)
+                .style(button::primary);
+
+                container(
+                    column![
+                        header,
+                        new_workflow_form,
+                        workflows_list,
+                        refresh_button,
+                    ]
+                    .spacing(20)
+                )
+                .padding(20)
+                .into()
+            }
+        }
+    }
+
+    fn view_workflow_details(&self, workflow_id: &str) -> Element<Message> {
+        if let Some(workflow) = self.workflows.iter().find(|w| w.id == workflow_id) {
+            let header = container(
+                column![
+                    Text::new(format!("Workflow Details: {}", workflow.name))
+                        .size(32)
+                        .style(style::header_text),
+                    Text::new(format!("Status: {:?}", workflow.status))
+                        .size(16)
+                ]
+            )
+            .padding(20)
+            .style(style::panel_content);
+
+            let steps_list = container(
+                column![
+                    Text::new("Workflow Steps")
+                        .size(24)
+                        .style(style::header_text),
+                    column(
+                        workflow.steps.iter().enumerate().map(|(index, step)| {
+                            container(
+                                row![
+                                    Text::new(format!("{}. ", index + 1)).size(16),
+                                    column![
+                                        Text::new(format!("Agent: {}", step.agent_id)).size(16),
+                                        match &step.action {
+                                            cli::AgentAction::ProcessText { input, .. } => 
+                                                Text::new(format!("Process Text: {}", input)),
+                                            cli::AgentAction::GenerateCode { prompt, language } => 
+                                                Text::new(format!("Generate {} Code: {}", language, prompt)),
+                                            cli::AgentAction::AnalyzeCode { code, aspects } => 
+                                                Text::new(format!("Analyze Code: {} ({})", code, aspects.join(", "))),
+                                            cli::AgentAction::CustomTask { task_type, parameters } => 
+                                                Text::new(format!("Custom Task: {} - {:?}", task_type, parameters)),
+                                        }.size(14),
+                                        if !step.dependencies.is_empty() {
+                                            Text::new(format!("Dependencies: {}", step.dependencies.join(", "))).size(14)
+                                        } else {
+                                            Text::new("No dependencies").size(14)
+                                        },
+                                    ],
+                                ]
+                                .spacing(10)
+                            )
+                            .padding(10)
+                            .style(style::panel_content)
+                            .into()
+                        }).collect::<Vec<Element<Message>>>()
+                    ).spacing(10)
+                ]
+                .spacing(20)
+            )
+            .padding(20)
+            .style(style::panel_content);
+
+            let action_buttons = container(
+                row![
+                    if workflow.status == WorkflowStatus::Ready {
+                        button(Text::new("Execute Workflow").size(16))
+                            .on_press(Message::ExecuteWorkflow(workflow.id.clone()))
+                            .padding(10)
+                            .style(button::primary)
+                    } else {
+                        button(Text::new("Workflow Running...").size(16))
+                            .padding(10)
+                            .style(button::secondary)
+                    },
+                    button(Text::new("Back to List").size(16))
+                        .on_press(Message::ViewWorkflowDetails(String::new()))
+                        .padding(10)
+                        .style(button::secondary),
+                ]
+                .spacing(15)
+            )
+            .padding(20)
+            .style(style::panel_content);
+
+            container(
+                column![
+                    header,
+                    steps_list,
+                    action_buttons,
+                ]
+                .spacing(20)
+            )
+            .padding(20)
+            .into()
+        } else {
+            container(
+                Text::new("Workflow not found")
                     .size(32)
                     .style(style::header_text)
             )
