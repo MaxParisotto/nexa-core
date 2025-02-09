@@ -10,7 +10,6 @@ Nexa Utils is built with a modular architecture focusing on reliability, scalabi
 
 The MCP module handles all agent communication and coordination:
 
-```
 mcp/
 ├── mod.rs         # Main MCP implementation
 ├── protocol.rs    # Protocol definitions and validation
@@ -18,9 +17,9 @@ mcp/
 ├── server.rs      # WebSocket server implementation
 ├── cluster.rs     # Cluster coordination
 └── loadbalancer.rs # Load balancing logic
-```
 
 Key features:
+
 - WebSocket-based communication with automatic reconnection
 - Protocol validation and message handling
 - Secure connection management
@@ -32,15 +31,14 @@ Key features:
 
 The monitoring module provides comprehensive system monitoring:
 
-```
 monitoring/
 ├── mod.rs        # Main monitoring implementation
 ├── metrics.rs    # Metrics collection and processing
 ├── alerts.rs     # Alert system
 └── health.rs     # Health check implementation
-```
 
 Features:
+
 - Real-time metrics collection (CPU, Memory, Network)
 - Health checks with configurable thresholds
 - Alert system with multiple severity levels
@@ -51,14 +49,13 @@ Features:
 
 The CLI module provides a user-friendly command interface:
 
-```
 cli/
 ├── mod.rs        # Main CLI implementation
 ├── commands.rs   # Command definitions
 └── output.rs     # Output formatting
-```
 
 Features:
+
 - Server control (start/stop/status)
 - Configuration management
 - Status monitoring and reporting
@@ -68,14 +65,13 @@ Features:
 
 The memory module handles resource allocation and tracking:
 
-```
 memory/
 ├── mod.rs        # Main memory management
 ├── allocator.rs  # Memory allocation
 └── cache.rs      # Caching implementation
-```
 
 Features:
+
 - Resource allocation tracking
 - Memory usage monitoring
 - Cache management
