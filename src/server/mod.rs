@@ -190,6 +190,7 @@ impl Server {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn get_state(&self) -> ServerState {
         self.state.read().await.clone()
     }
@@ -198,10 +199,9 @@ impl Server {
         self.clients.read().await.len()
     }
 
+    #[allow(dead_code)]
     pub async fn get_metrics(&self) -> ServerMetrics {
-        let mut metrics = self.metrics.write().await;
-        metrics.update_uptime();
-        metrics.clone()
+        self.metrics.write().await.clone()
     }
 
     async fn handle_connection(&self, socket: TcpStream, addr: SocketAddr) -> Result<(), NexaError> {
