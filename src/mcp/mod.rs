@@ -35,7 +35,7 @@ use chrono::Utc;
 use crate::mcp::buffer::{BufferedMessage, MessageBuffer, Priority, BufferConfig};
 use crate::monitoring::{SystemMetrics, SystemHealth};
 use crate::memory::{MemoryStats, ResourceType};
-use crate::tokens::{ModelType, TokenUsage};
+use crate::mcp::tokens::{ModelType, TokenUsage};
 use crate::error::NexaError;
 use log::{error, info};
 
@@ -59,7 +59,7 @@ pub static GLOBAL_MCP_STATE: Lazy<StdRwLock<McpState>> = Lazy::new(|| {
 });
 
 /// Returns a reference to the global MCP state.
-pub fn global_state() -> &'static StdRwLock<McpState> {
+pub fn global_state() -> &'static Lazy<StdRwLock<McpState>> {
     &GLOBAL_MCP_STATE
 }
 
@@ -270,6 +270,9 @@ impl MCP {
         self.buffer.pop(priority).await
     }
 }
+
+// Re-export commonly used types
+pub use cluster::ClusterManager;
 
 #[cfg(test)]
 mod tests {

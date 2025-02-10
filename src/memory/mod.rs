@@ -14,7 +14,7 @@ use crate::error::NexaError;
 use serde::{Serialize, Deserialize};
 
 /// Memory usage statistics
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStats {
     pub total_used: usize,
     pub total_allocated: usize,

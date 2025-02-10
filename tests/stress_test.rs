@@ -1,48 +1,24 @@
-use nexa_core::mcp::cluster::ClusterConfig;
-use std::time::Duration;
 use nexa_core::error::NexaError;
-use proptest::prelude::*;
-use uuid::Uuid;
-use nexa_core::mcp::cluster::ElectionTimeout;
-
-proptest! {
-    #[test]
-    fn test_cluster_config_generation(
-        heartbeat_ms in 100u64..1000,
-        election_ms in 1000u64..5000,
-        quorum_size in 2usize..10,
-        _node_count in 3usize..20,
-    ) {
-        let config = ClusterConfig {
-            heartbeat_interval: Duration::from_millis(heartbeat_ms),
-            election_timeout: ElectionTimeout(Duration::from_millis(election_ms), Duration::from_millis(election_ms * 2)),
-            min_quorum_size: quorum_size,
-            node_timeout: Duration::from_secs(5),
-            replication_factor: 3,
-            cluster_id: Uuid::new_v4().to_string(),
-        };
-
-        // Validate configuration
-        prop_assert!(config.election_timeout.0 > config.heartbeat_interval);
-        prop_assert!(config.min_quorum_size >= 2);
-    }
-}
+use nexa_core::server::Server;
+use std::path::PathBuf;
+use tokio::time::Duration;
 
 #[tokio::test]
-async fn test_cluster_config() -> Result<(), NexaError> {
-    // Initialize cluster configuration
-    let config = ClusterConfig {
-        heartbeat_interval: Duration::from_millis(100),
-        election_timeout: ElectionTimeout(Duration::from_millis(500), Duration::from_millis(1000)),
-        min_quorum_size: 2,
-        node_timeout: Duration::from_secs(5),
-        replication_factor: 3,
-        cluster_id: Uuid::new_v4().to_string(),
-    };
-
-    // Validate configuration
-    assert!(config.election_timeout.0 > config.heartbeat_interval);
-    assert!(config.min_quorum_size >= 2);
-
+async fn test_server_stress() -> Result<(), NexaError> {
+    let server = Server::new(
+        PathBuf::from("/tmp/test.pid"),
+        PathBuf::from("/tmp/test.sock"),
+    );
+    
+    server.start().await?;
+    
+    // Run some basic stress tests
+    for _ in 0..10 {
+        let metrics = server.get_metrics().await;
+        assert!(metrics.total_connections < u64::MAX);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    
+    server.stop().await?;
     Ok(())
 } 

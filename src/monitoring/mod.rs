@@ -7,20 +7,20 @@
 //! - Alert system
 //! - Metrics aggregation
 
+use log::{error, info, debug};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use crate::error::NexaError;
 use crate::memory::MemoryManager;
-use crate::tokens::{TokenManager, TokenUsage};
+use crate::tokens::{TokenManager, TokenMetrics};
 use serde::{Serialize, Deserialize};
-use std::time::Duration;
 use sysinfo::System;
-use utoipa;
-use log::debug;
+use std::time::SystemTime;
+use tokio::time::Duration;
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemMetrics {
     pub cpu_usage: f64,
     pub memory_used: usize,
@@ -49,21 +49,21 @@ impl Default for SystemMetrics {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemHealth {
     pub is_healthy: bool,
     pub message: String,
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemAlert {
     pub level: AlertLevel,
     pub message: String,
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AlertLevel {
     Info,
     Warning,
@@ -82,7 +82,7 @@ impl std::fmt::Display for AlertLevel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceType {
     Memory,
     CPU,
@@ -90,7 +90,7 @@ pub enum ResourceType {
     Storage,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
     pub name: String,
     pub resource_type: ResourceType,
@@ -110,11 +110,11 @@ pub struct MonitoringSystem {
     resources: Arc<RwLock<HashMap<String, Resource>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemStatus {
     pub metrics: SystemMetrics,
     pub health: SystemHealth,
-    pub token_usage: TokenUsage,
+    pub token_usage: TokenMetrics,
     pub alerts: Vec<SystemAlert>,
 }
 

@@ -186,6 +186,13 @@ mod tests {
                 status: AgentStatus::Idle,
                 current_task: None,
                 last_heartbeat: Utc::now(),
+                parent_id: None,
+                children: vec![],
+                last_active: Utc::now(),
+                config: crate::types::agent::AgentConfig::default(),
+                metrics: crate::types::agent::AgentMetrics::default(),
+                workflows: vec![],
+                supported_actions: vec![],
             },
         };
 

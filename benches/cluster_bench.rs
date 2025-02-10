@@ -23,5 +23,22 @@ pub fn cluster_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, cluster_benchmark);
+fn cluster_operations(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+
+    c.bench_function("cluster_basic_ops", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                // Simulate basic cluster operations
+                black_box(async {
+                    tokio::time::sleep(tokio::time::Duration::from_micros(1)).await;
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await
+            })
+        })
+    });
+}
+
+criterion_group!(benches, cluster_benchmark, cluster_operations);
 criterion_main!(benches); 

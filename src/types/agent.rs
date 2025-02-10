@@ -1,18 +1,54 @@
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
-use utoipa::ToSchema;
+use std::fmt;
+use std::str::FromStr;
 
-/// AgentStatus represents the current state of an agent (Idle or Active).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+/// AgentStatus represents the current state of an agent (Idle, Active, Busy, Offline).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AgentStatus {
     /// Agent is idle and available for tasks
     Idle,
     /// Agent is currently working on a task
     Active,
+    /// Agent is busy and cannot take new tasks
+    Busy,
+    /// Agent is offline and not available for tasks
+    Offline,
+}
+
+impl Default for AgentStatus {
+    fn default() -> Self {
+        AgentStatus::Offline
+    }
+}
+
+impl FromStr for AgentStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "idle" => Ok(AgentStatus::Idle),
+            "active" => Ok(AgentStatus::Active),
+            "busy" => Ok(AgentStatus::Busy),
+            "offline" => Ok(AgentStatus::Offline),
+            _ => Err(format!("Invalid agent status: {}", s))
+        }
+    }
+}
+
+impl fmt::Display for AgentStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentStatus::Active => write!(f, "active"),
+            AgentStatus::Busy => write!(f, "busy"),
+            AgentStatus::Idle => write!(f, "idle"),
+            AgentStatus::Offline => write!(f, "offline"),
+        }
+    }
 }
 
 /// TaskStatus represents the current status of a task (Pending, InProgress, Completed, Failed).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
     /// Task is waiting to be started
     Pending,
@@ -25,7 +61,7 @@ pub enum TaskStatus {
 }
 
 /// Agent encapsulates the properties of an agent.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
     /// Unique identifier for the agent
     pub id: String,
@@ -39,6 +75,20 @@ pub struct Agent {
     pub current_task: Option<String>,
     /// Timestamp of the last heartbeat received
     pub last_heartbeat: DateTime<Utc>,
+    /// ID of the parent agent, if any
+    pub parent_id: Option<String>,
+    /// IDs of child agents, if any
+    pub children: Vec<String>,
+    /// Timestamp of the last active time
+    pub last_active: DateTime<Utc>,
+    /// Configuration of the agent
+    pub config: AgentConfig,
+    /// Metrics of the agent
+    pub metrics: AgentMetrics,
+    /// Workflows this agent is part of
+    pub workflows: Vec<String>,
+    /// Supported actions this agent can perform
+    pub supported_actions: Vec<String>,
 }
 
 impl Agent {
@@ -51,6 +101,13 @@ impl Agent {
             status: AgentStatus::Idle,
             current_task: None,
             last_heartbeat: Utc::now(),
+            parent_id: None,
+            children: Vec::new(),
+            last_active: Utc::now(),
+            config: AgentConfig::default(),
+            metrics: AgentMetrics::default(),
+            workflows: Vec::new(),
+            supported_actions: Vec::new(),
         }
     }
 
@@ -61,7 +118,7 @@ impl Agent {
 }
 
 /// Task represents an assigned task with a description, priority, and associated agent id.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     /// Unique identifier for the task
     pub id: String,
@@ -110,6 +167,42 @@ impl Task {
             deadline,
             priority,
             estimated_duration,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    pub llm_model: String,
+    pub llm_provider: String,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            llm_model: "gpt-3.5-turbo".to_string(),
+            llm_provider: "openai".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMetrics {
+    pub tasks_completed: u64,
+    pub tasks_failed: u64,
+    pub uptime: u64,
+    pub memory_usage: u64,
+    pub cpu_usage: f64,
+}
+
+impl Default for AgentMetrics {
+    fn default() -> Self {
+        Self {
+            tasks_completed: 0,
+            tasks_failed: 0,
+            uptime: 0,
+            memory_usage: 0,
+            cpu_usage: 0.0,
         }
     }
 } 

@@ -1,15 +1,24 @@
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
-use utoipa::ToSchema;
-use crate::cli;
+use std::fmt;
+use crate::types::agent::{AgentStatus as TypesAgentStatus, AgentConfig, AgentMetrics, Agent as TypesAgent};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Ord, PartialOrd)]
-pub enum AgentStatus {
-    Idle,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ModelAgentStatus {
     Active,
+    Idle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+impl fmt::Display for ModelAgentStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModelAgentStatus::Active => write!(f, "active"),
+            ModelAgentStatus::Idle => write!(f, "idle"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TaskStatus {
     Pending,
     InProgress,
@@ -17,23 +26,23 @@ pub enum TaskStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
     pub id: String,
     pub name: String,
     pub capabilities: Vec<String>,
-    pub status: AgentStatus,
+    pub status: ModelAgentStatus,
     pub parent_id: Option<String>,
     pub children: Vec<String>,
     pub current_task: Option<String>,
     pub last_heartbeat: DateTime<Utc>,
-    pub config: cli::AgentConfig,
-    pub metrics: cli::AgentMetrics,
+    pub config: AgentConfig,
+    pub metrics: AgentMetrics,
     pub workflows: Vec<String>,
     pub supported_actions: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -44,24 +53,32 @@ pub struct Task {
     pub assigned_agent: Option<String>,
     pub created_at: DateTime<Utc>,
     pub deadline: Option<DateTime<Utc>>,
-    pub priority: i32,
+    pub priority: TaskPriority,
     pub estimated_duration: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TaskPriority {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
 impl Agent {
-    pub fn from_cli_agent(cli_agent: cli::Agent) -> Self {
+    pub fn from_cli_agent(cli_agent: TypesAgent) -> Self {
         Self {
             id: cli_agent.id,
             name: cli_agent.name,
             capabilities: cli_agent.capabilities,
             status: match cli_agent.status {
-                cli::AgentStatus::Active | cli::AgentStatus::Busy => AgentStatus::Active,
-                _ => AgentStatus::Idle,
+                TypesAgentStatus::Active | TypesAgentStatus::Busy => ModelAgentStatus::Active,
+                _ => ModelAgentStatus::Idle,
             },
             parent_id: cli_agent.parent_id,
             children: cli_agent.children,
-            current_task: None,
-            last_heartbeat: cli_agent.last_active,
+            current_task: cli_agent.current_task,
+            last_heartbeat: cli_agent.last_heartbeat,
             config: cli_agent.config,
             metrics: cli_agent.metrics,
             workflows: cli_agent.workflows,

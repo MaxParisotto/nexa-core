@@ -5,43 +5,22 @@
 //! - Monitoring system status
 //! - Managing agents
 
-extern crate self as nexa_core;
 use clap::{Parser, Subcommand};
-use log::{error, info, debug};
-use nexa_core::server::Server;
+use log::{info, error, debug};
 use std::path::PathBuf;
-use nexa_core::error::NexaError;
-use sysinfo;
 use std::process;
 use std::fs;
 use nix::libc;
-use nexa_core::llm::system_helper::TaskPriority;
 use reqwest;
 use serde_json;
 use uuid;
-use chrono;
-use serde;
-use nexa_core::llm::LLMConnection;
-use tokio::sync::mpsc;
-
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-pub enum Commands {
-    /// Start the server
-    Start,
-    /// Stop the server
-    Stop,
-    /// Get server status
-    Status,
-    /// Launch the GUI
-    Gui,
-}
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use crate::error::NexaError;
+use crate::llm::system_helper::TaskPriority;
+use crate::types::agent::{Agent, AgentStatus, AgentConfig, AgentMetrics};
+use crate::types::workflow::{WorkflowStatus, WorkflowStep, AgentWorkflow, AgentAction, RetryPolicy};
+use crate::server::Server;
 
 #[derive(Debug, Clone)]
 pub struct LLMModel {
@@ -52,109 +31,114 @@ pub struct LLMModel {
     pub description: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Agent {
-    pub id: String,
-    pub name: String,
-    pub capabilities: Vec<String>,
-    pub status: AgentStatus,
-    pub parent_id: Option<String>,
-    pub children: Vec<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub last_active: chrono::DateTime<chrono::Utc>,
-    pub config: AgentConfig,
-    pub metrics: AgentMetrics,
-    pub workflows: Vec<String>,
-    pub supported_actions: Vec<String>,
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AgentConfig {
-    pub max_concurrent_tasks: usize,
-    pub priority_threshold: i32,
-    pub llm_provider: String,
-    pub llm_model: String,
-    pub retry_policy: RetryPolicy,
-    pub timeout_seconds: u64,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            max_concurrent_tasks: 4,
-            priority_threshold: 0,
-            llm_provider: "LMStudio".to_string(),
-            llm_model: "default".to_string(),
-            retry_policy: RetryPolicy {
-                max_retries: 3,
-                backoff_ms: 1000,
-                max_backoff_ms: 10000,
-            },
-            timeout_seconds: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct RetryPolicy {
-    pub max_retries: u32,
-    pub backoff_ms: u64,
-    pub max_backoff_ms: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AgentMetrics {
-    pub tasks_completed: u64,
-    pub tasks_failed: u64,
-    pub average_response_time_ms: f64,
-    pub uptime_seconds: u64,
-    pub last_error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum AgentStatus {
-    Active,
-    Idle,
-    Busy,
-    Error,
-    Maintenance,
-    Offline,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AgentWorkflow {
-    pub id: String,
-    pub name: String,
-    pub steps: Vec<WorkflowStep>,
-    pub status: WorkflowStatus,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub last_run: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WorkflowStep {
-    pub agent_id: String,
-    pub action: AgentAction,
-    pub dependencies: Vec<String>,
-    pub retry_policy: Option<RetryPolicy>,
-    pub timeout_seconds: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum WorkflowStatus {
-    Ready,
-    Running,
-    Completed,
-    Failed,
-    Paused,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum AgentAction {
-    ProcessText { input: String, _max_tokens: usize },
-    GenerateCode { prompt: String, language: String },
-    AnalyzeCode { code: String, aspects: Vec<String> },
-    CustomTask { task_type: String, parameters: serde_json::Value },
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Start the Nexa server
+    Start {
+        /// Optional port number
+        #[arg(short, long)]
+        port: Option<u16>,
+    },
+    
+    /// Stop the Nexa server
+    Stop,
+    
+    /// Get server status
+    Status,
+    
+    /// List all agents
+    Agents {
+        /// Filter by status
+        #[arg(short, long)]
+        status: Option<String>,
+    },
+    
+    /// Create a new agent
+    CreateAgent {
+        /// Agent name
+        #[arg(short, long)]
+        name: String,
+        /// LLM model to use
+        #[arg(short, long)]
+        model: Option<String>,
+        /// LLM provider
+        #[arg(short, long)]
+        provider: Option<String>,
+    },
+    
+    /// Stop an agent
+    StopAgent {
+        /// Agent ID
+        #[arg(short, long)]
+        id: String,
+    },
+    
+    /// List available models
+    Models {
+        /// Provider to list models for
+        #[arg(short, long)]
+        provider: String,
+    },
+    
+    /// Add LLM server
+    AddServer {
+        /// Provider name
+        #[arg(short, long)]
+        provider: String,
+        /// Server URL
+        #[arg(short, long)]
+        url: String,
+    },
+    
+    /// Remove LLM server
+    RemoveServer {
+        /// Provider name
+        #[arg(short, long)]
+        provider: String,
+    },
+    
+    /// Create a new task
+    CreateTask {
+        /// Task description
+        #[arg(short, long)]
+        description: String,
+        /// Task priority
+        #[arg(short, long, default_value = "medium")]
+        priority: String,
+        /// Agent ID to assign task to
+        #[arg(short, long)]
+        agent_id: Option<String>,
+    },
+    
+    /// List tasks
+    Tasks,
+    
+    /// List workflows
+    Workflows,
+    
+    /// Create a new workflow
+    CreateWorkflow {
+        /// Workflow name
+        #[arg(short, long)]
+        name: String,
+        /// Workflow steps
+        #[arg(short, long)]
+        steps: Vec<String>,
+    },
+    
+    /// Execute a workflow
+    ExecuteWorkflow {
+        /// Workflow ID
+        #[arg(short, long)]
+        id: String,
+    },
 }
 
 #[derive(Debug)]
@@ -188,10 +172,9 @@ impl CliHandler {
         false
     }
 
-    pub async fn start(&self, _addr: Option<&str>) -> Result<(), NexaError> {
+    pub async fn start(&self, port: Option<&str>) -> Result<(), NexaError> {
         if self.is_server_running() {
-            debug!("Server is already running");
-            return Ok(());
+            return Err(NexaError::System("Server is already running".to_string()));
         }
 
         // Start server in a separate tokio task
@@ -204,7 +187,7 @@ impl CliHandler {
 
         // Write PID file after server starts
         fs::write(&self.pid_file, process::id().to_string())
-            .map_err(|e| NexaError::System(format!("Failed to write PID file: {}", e)))?;
+            .map_err(|e| NexaError::Io(e.to_string()))?;
 
         info!("Started Nexa Core server");
         Ok(())
@@ -212,8 +195,7 @@ impl CliHandler {
 
     pub async fn stop(&self) -> Result<(), NexaError> {
         if !self.is_server_running() {
-            debug!("Server is not running");
-            return Ok(());
+            return Err(NexaError::System("Server is not running".to_string()));
         }
 
         // Stop the server gracefully
@@ -253,7 +235,7 @@ impl CliHandler {
             status.push_str("Server is not running. Start it with 'nexa start'\n");
         } else {
             let pid = fs::read_to_string(&self.pid_file)
-                .map_err(|e| NexaError::System(format!("Failed to read PID file: {}", e)))?;
+                .map_err(|e| NexaError::Io(e.to_string()))?;
             status.push_str(&format!("Server is running on 0.0.0.0:8080\n"));
             status.push_str(&format!("PID: {}\n", pid.trim()));
 
@@ -273,39 +255,31 @@ impl CliHandler {
     }
 
     /// Creates a new agent with the given configuration
-    pub async fn create_agent(&self, name: String, config: AgentConfig) -> Result<Agent, String> {
+    pub async fn create_agent(&self, name: String, config: AgentConfig) -> Result<Agent, Box<dyn std::error::Error>> {
         info!("Creating agent {} with configuration: {:?}", name, config);
         
         let agent = Agent {
             id: uuid::Uuid::new_v4().to_string(),
             name,
             capabilities: Vec::new(),
-            status: AgentStatus::Idle,
+            status: AgentStatus::Offline,
+            current_task: None,
+            last_heartbeat: Utc::now(),
             parent_id: None,
             children: Vec::new(),
-            created_at: chrono::Utc::now(),
-            last_active: chrono::Utc::now(),
+            last_active: Utc::now(),
             config,
-            metrics: AgentMetrics {
-                tasks_completed: 0,
-                tasks_failed: 0,
-                average_response_time_ms: 0.0,
-                uptime_seconds: 0,
-                last_error: None,
-            },
+            metrics: AgentMetrics::default(),
             workflows: Vec::new(),
             supported_actions: Vec::new(),
         };
 
-        // Save agent to persistent storage
         self.save_agent(&agent).await?;
-        
-        info!("Agent {} created successfully with ID: {}", agent.name, agent.id);
         Ok(agent)
     }
 
     /// Tests an agent's capabilities with a sample task
-    pub async fn test_agent(&self, agent_id: &str) -> Result<String, String> {
+    pub async fn test_agent(&self, agent_id: &str) -> Result<String, NexaError> {
         info!("Testing agent {}", agent_id);
         
         let agent = self.get_agent(agent_id).await?;
@@ -318,103 +292,73 @@ impl CliHandler {
 
         // Test the agent using its configured LLM
         let start_time = std::time::Instant::now();
-        let result = self.try_chat_completion(
-            &reqwest::Client::new(),
-            &agent.config.llm_model,
-            &test_prompt
-        ).await;
+        let result = self.try_chat_completion(&test_prompt, &agent.config.llm_model).await;
 
         // Update agent metrics
         let mut updated_agent = agent.clone();
         match &result {
             Ok(_) => {
                 updated_agent.metrics.tasks_completed += 1;
-                updated_agent.metrics.average_response_time_ms = 
-                    (updated_agent.metrics.average_response_time_ms * (updated_agent.metrics.tasks_completed - 1) as f64
-                    + start_time.elapsed().as_millis() as f64) / updated_agent.metrics.tasks_completed as f64;
+                updated_agent.metrics.cpu_usage = 
+                    (updated_agent.metrics.cpu_usage * (updated_agent.metrics.tasks_completed - 1) as f64
+                    + start_time.elapsed().as_secs() as f64) / updated_agent.metrics.tasks_completed as f64;
             },
-            Err(e) => {
+            Err(_) => {
                 updated_agent.metrics.tasks_failed += 1;
-                updated_agent.metrics.last_error = Some(e.clone());
-                updated_agent.status = AgentStatus::Error;
+                updated_agent.status = AgentStatus::Offline;
             }
         }
         
         self.save_agent(&updated_agent).await?;
-        
         result
     }
 
     /// Updates an agent's capabilities
-    pub async fn update_agent_capabilities(&self, agent_id: &str, capabilities: Vec<String>) -> Result<(), String> {
-        info!("Updating capabilities for agent {}: {:?}", agent_id, capabilities);
-        
+    pub async fn update_agent_capabilities(&self, agent_id: &str, capabilities: Vec<String>) -> Result<(), NexaError> {
         let mut agent = self.get_agent(agent_id).await?;
         agent.capabilities = capabilities;
-        agent.last_active = chrono::Utc::now();
-        
-        self.save_agent(&agent).await
+        agent.last_active = Utc::now();
+        self.save_agent(&agent).await?;
+        Ok(())
     }
 
     /// Creates a hierarchical relationship between agents
-    pub async fn set_agent_hierarchy(&self, parent_id: &str, child_id: &str) -> Result<(), String> {
-        info!("Setting agent hierarchy: parent={}, child={}", parent_id, child_id);
-        
+    pub async fn set_agent_hierarchy(&self, parent_id: &str, child_id: &str) -> Result<(), NexaError> {
         let mut parent = self.get_agent(parent_id).await?;
         let mut child = self.get_agent(child_id).await?;
         
-        // Prevent circular dependencies
-        if child.id == parent_id || parent.parent_id.as_ref() == Some(&child.id) {
-            return Err("Circular dependency detected".to_string());
+        if parent.children.contains(&child_id.to_string()) {
+            return Err(NexaError::Agent("Parent-child relationship already exists".to_string()));
         }
         
-        // Update parent-child relationships
-        parent.children.push(child.id.clone());
+        parent.children.push(child_id.to_string());
         child.parent_id = Some(parent_id.to_string());
         
-        // Save both agents
         self.save_agent(&parent).await?;
-        self.save_agent(&child).await
+        self.save_agent(&child).await?;
+        Ok(())
     }
 
     /// Retrieves an agent by ID
-    async fn get_agent(&self, agent_id: &str) -> Result<Agent, String> {
-        let path = self.get_agent_file_path(agent_id);
-        let content = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|e| format!("Failed to read agent file: {}", e))?;
-            
+    async fn get_agent(&self, agent_id: &str) -> Result<Agent, NexaError> {
+        let agent_file = format!("agents/{}.json", agent_id);
+        let content = fs::read_to_string(&agent_file)
+            .map_err(|e| NexaError::Io(e.to_string()))?;
         serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse agent data: {}", e))
+            .map_err(|e| NexaError::Json(e.to_string()))
     }
 
     /// Saves an agent to persistent storage
-    async fn save_agent(&self, agent: &Agent) -> Result<(), String> {
-        let path = self.get_agent_file_path(&agent.id);
-        
-        // Ensure directory exists
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("Failed to create agent directory: {}", e))?;
-        }
-        
+    async fn save_agent(&self, agent: &Agent) -> Result<(), NexaError> {
+        let agent_file = format!("agents/{}.json", agent.id);
         let content = serde_json::to_string_pretty(agent)
-            .map_err(|e| format!("Failed to serialize agent data: {}", e))?;
-            
-        tokio::fs::write(&path, content)
-            .await
-            .map_err(|e| format!("Failed to write agent file: {}", e))
-    }
-
-    /// Gets the file path for an agent's persistent storage
-    fn get_agent_file_path(&self, agent_id: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from("/tmp/nexa/agents")
-            .join(format!("{}.json", agent_id))
+            .map_err(|e| NexaError::Json(e.to_string()))?;
+        fs::write(&agent_file, content)
+            .map_err(|e| NexaError::Io(e.to_string()))
     }
 
     /// Lists all agents with optional filtering
-    pub async fn list_agents(&self, status: Option<AgentStatus>) -> Result<Vec<Agent>, String> {
+    pub async fn list_agents(&self, status: Option<AgentStatus>) -> Result<Vec<Agent>, Box<dyn std::error::Error>> {
         let agents_dir = std::path::PathBuf::from("/tmp/nexa/agents");
         
         if !agents_dir.exists() {
@@ -424,7 +368,7 @@ impl CliHandler {
         let mut agents = Vec::new();
         let mut read_dir = tokio::fs::read_dir(&agents_dir)
             .await
-            .map_err(|e| format!("Failed to read agents directory: {}", e))?;
+            .map_err(|e| Box::new(e))?;
             
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
@@ -440,7 +384,7 @@ impl CliHandler {
     }
 
     /// Gets the agent hierarchy as a tree structure
-    pub async fn get_agent_hierarchy(&self) -> Result<Vec<Agent>, String> {
+    pub async fn get_agent_hierarchy(&self) -> Result<Vec<Agent>, Box<dyn std::error::Error>> {
         let all_agents = self.list_agents(None).await?;
         
         // Filter to get only root agents (those without parents)
@@ -452,94 +396,108 @@ impl CliHandler {
     }
 
     /// Creates a new task with the given description, priority and agent assignment.
-    pub async fn create_task(&self, description: String, priority: TaskPriority, agent_id: String) -> Result<(), String> {
-        info!("Creating task: {} with priority {:?} for agent {}", description, priority, agent_id);
+    pub async fn create_task(&self, description: String, priority: TaskPriority, agent_id: Option<String>) -> Result<(), NexaError> {
+        info!("Creating task: {} with priority {:?} for agent {}", description, priority, agent_id.as_deref().unwrap_or("none"));
         // TODO: Implement actual task creation
         Ok(())
     }
 
     /// Sets the maximum number of connections allowed.
-    pub async fn set_max_connections(&self, max: u32) -> Result<(), String> {
+    pub async fn set_max_connections(&self, max: u32) -> Result<(), NexaError> {
         info!("Setting max connections to {}", max);
         // TODO: Implement actual connection limit setting
         Ok(())
     }
 
-    pub async fn add_llm_server(&self, provider: &str, address: &str) -> Result<(), String> {
-        info!("Adding LLM server: {} at {}", provider, address);
+    pub async fn add_llm_server(&self, provider: &str, url: &str) -> Result<(), NexaError> {
+        info!("Adding LLM server: {} at {}", provider, url);
         // TODO: Add proper LLM server configuration
         Ok(())
     }
 
-    pub async fn remove_llm_server(&self, provider: &str) -> Result<(), String> {
+    pub async fn remove_llm_server(&self, provider: &str) -> Result<(), NexaError> {
         info!("Removing LLM server: {}", provider);
         // TODO: Remove LLM server configuration
         Ok(())
     }
 
-    pub async fn connect_llm(&self, provider: &str) -> Result<(), String> {
+    pub async fn connect_llm(&self, provider: &str) -> Result<(), NexaError> {
         info!("Connecting to LLM server: {}", provider);
         match provider {
-            "LMStudio" => {
-                LLMConnection::connect("LMStudio", "system".to_string()).await
-                    .map_err(|e| e.to_string())
-            },
-            "Ollama" => {
-                LLMConnection::connect("Ollama", "system".to_string()).await
-                    .map_err(|e| e.to_string())
-            },
-            _ => Err(format!("Unsupported LLM provider: {}", provider))
-        }
-    }
-
-    pub async fn disconnect_llm(&self, provider: &str) -> Result<(), String> {
-        info!("Disconnecting from LLM server: {}", provider);
-        match provider {
-            "LMStudio" => {
-                // For LM Studio, we need to unload the model and verify disconnection
+            "openai" => {
+                // Implementation for OpenAI
+                Ok(())
+            }
+            "lmstudio" => {
                 let client = reqwest::Client::new();
-                
-                // First, get the currently loaded model
                 let response = client.get("http://localhost:1234/v1/models")
                     .send()
                     .await
-                    .map_err(|e| format!("Failed to connect to LMStudio: {}", e))?;
+                    .map_err(|e| NexaError::System(e.to_string()))?;
 
-                let status = response.status();
-                if status.is_success() {
-                    // Send a special completion request to trigger cleanup
-                    let _cleanup_response = client.post("http://localhost:1234/v1/chat/completions")
-                        .header("Content-Type", "application/json")
-                        .json(&serde_json::json!({
-                            "model": "none",  // Invalid model to force unload
-                            "messages": [{"role": "system", "content": "cleanup"}],
-                            "temperature": 0.0,
-                            "max_tokens": 1
-                        }))
-                        .send()
-                        .await;
-
-                    // Ignore the cleanup response as it's expected to fail
-                    info!("LM Studio model unloaded successfully");
-                    Ok(())
+                if response.status().is_success() {
+                    let models: serde_json::Value = response.json().await
+                        .map_err(|e| NexaError::Json(e.to_string()))?;
+                    
+                    if let Some(data) = models.get("data") {
+                        if let Some(array) = data.as_array() {
+                            let models = array.iter()
+                                .filter_map(|m| m.get("id"))
+                                .filter_map(|id| id.as_str())
+                                .map(|s| s.to_string())
+                                .collect::<Vec<_>>();
+                            if models.is_empty() {
+                                Err(NexaError::System("No models found in LM Studio".to_string()))
+                            } else {
+                                Ok(())
+                            }
+                        } else {
+                            Err(NexaError::System("Invalid response format from LM Studio".to_string()))
+                        }
+                    } else {
+                        Err(NexaError::System("Invalid response format from LM Studio".to_string()))
+                    }
                 } else {
+                    let status = response.status();
                     let error_text = response.text().await
                         .unwrap_or_else(|_| "Unknown error".to_string());
-                    Err(format!("Failed to disconnect ({}): {}", status, error_text))
+                    Err(NexaError::System(format!("Failed to connect ({}): {}", status, error_text)))
                 }
-            },
-            "Ollama" => {
-                // Existing Ollama implementation
-                Ok(())
-            },
-            _ => Err(format!("Unsupported LLM provider: {}", provider))
+            }
+            _ => Err(NexaError::System(format!("Unsupported LLM provider: {}", provider)))
         }
     }
 
-    pub async fn list_models(&self, provider: &str) -> Result<Vec<LLMModel>, String> {
-        info!("Listing models for provider: {}", provider);
+    pub async fn disconnect_llm(&self, provider: &str) -> Result<(), NexaError> {
+        info!("Disconnecting from LLM server: {}", provider);
         match provider {
-            "LMStudio" => {
+            "openai" => {
+                // Implementation for OpenAI
+                Ok(())
+            }
+            "lmstudio" => {
+                let client = reqwest::Client::new();
+                let response = client.post("http://localhost:1234/v1/disconnect")
+                    .send()
+                    .await
+                    .map_err(|e| NexaError::LLMError(e.to_string()))?;
+
+                if response.status().is_success() {
+                    Ok(())
+                } else {
+                    let status = response.status();
+                    let error_text = response.text().await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    Err(NexaError::LLMError(format!("Failed to disconnect ({}): {}", status, error_text)))
+                }
+            }
+            _ => Err(NexaError::LLMError(format!("Unsupported LLM provider: {}", provider)))
+        }
+    }
+
+    pub async fn list_models(&self, provider: &str) -> Result<Vec<LLMModel>, Box<dyn std::error::Error>> {
+        match provider {
+            "lmstudio" => {
                 let client = reqwest::Client::new();
                 match client.get("http://localhost:1234/v1/models")
                     .send()
@@ -547,264 +505,170 @@ impl CliHandler {
                     Ok(response) => {
                         match response.json::<serde_json::Value>().await {
                             Ok(json) => {
-                                let models = json["data"].as_array()
-                                    .ok_or("Invalid response format: missing 'data' array")?
+                                let models = json["data"]
+                                    .as_array()
+                                    .unwrap_or(&Vec::new())
                                     .iter()
-                                    .filter_map(|model| {
-                                        let id = model["id"].as_str()?;
-                                        
-                                        // Extract model details from the ID
-                                        let (size, quantization) = if id.contains("32b") {
-                                            ("32B", Some("IQ2_XXS".to_string()))
-                                        } else if id.contains("7b") {
-                                            ("7B", Some("Q4_K_M".to_string()))
-                                        } else {
-                                            ("Unknown", None)
-                                        };
-
-                                        // Create more descriptive model information
-                                        let description = match id {
-                                            s if s.contains("qwen") => 
-                                                "Qwen model optimized for instruction following and chat",
-                                            s if s.contains("coder") => 
-                                                "Code generation optimized model",
-                                            s if s.contains("embed") => 
-                                                "Text embedding model for vector representations",
-                                            _ => "General purpose language model"
-                                        };
-
-                                        Some(LLMModel {
-                                            name: id.to_string(),
-                                            size: size.to_string(),
-                                            context_length: if id.contains("32b") { 16384 } else { 4096 },
-                                            quantization: quantization,
-                                            description: description.to_string(),
-                                        })
+                                    .map(|m| LLMModel {
+                                        name: m["id"].as_str().unwrap_or("unknown").to_string(),
+                                        size: "unknown".to_string(),
+                                        context_length: 4096,
+                                        quantization: None,
+                                        description: "LM Studio model".to_string(),
                                     })
                                     .collect::<Vec<_>>();
                                 if models.is_empty() {
-                                    Err("No models found in LM Studio".to_string())
+                                    Err(Box::new(NexaError::LLMError("No models found in LM Studio".to_string())))
                                 } else {
                                     Ok(models)
                                 }
                             },
-                            Err(e) => Err(format!("Failed to parse LMStudio response: {}", e))
+                            Err(e) => Err(Box::new(NexaError::LLMError(format!("Failed to parse LMStudio response: {}", e))))
                         }
                     },
                     Err(e) => {
                         if e.is_connect() {
-                            Err("LM Studio server is not running. Please start LM Studio and enable the local server in Settings -> Local Server".to_string())
+                            Err(Box::new(NexaError::LLMError("LM Studio server is not running. Please start LM Studio and enable the local server in Settings -> Local Server".to_string())))
                         } else {
-                            Err(format!("Failed to connect to LMStudio: {}", e))
+                            Err(Box::new(NexaError::LLMError(format!("Failed to connect to LMStudio: {}", e))))
                         }
                     }
                 }
             },
-            "Ollama" => {
-                // Ollama API call implementation
-                match reqwest::get("http://localhost:11434/api/tags").await {
+            "ollama" => {
+                let client = reqwest::Client::new();
+                match client.get("http://localhost:11434/api/tags")
+                    .send()
+                    .await {
                     Ok(response) => {
                         match response.json::<serde_json::Value>().await {
                             Ok(json) => {
-                                let models = json["models"].as_array()
-                                    .ok_or("Invalid response format")?
+                                let models = json["models"]
+                                    .as_array()
+                                    .unwrap_or(&Vec::new())
                                     .iter()
-                                    .filter_map(|model| {
-                                        let name = model["name"].as_str()?;
-                                        Some(LLMModel {
-                                            name: name.to_string(),
-                                            size: model["size"].as_str()
-                                                .unwrap_or("Unknown")
-                                                .to_string(),
-                                            context_length: model["context_length"]
-                                                .as_u64()
-                                                .unwrap_or(4096) as usize,
-                                            quantization: model["quantization"]
-                                                .as_str()
-                                                .map(|s| s.to_string()),
-                                            description: model["description"]
-                                                .as_str()
-                                                .unwrap_or("No description available")
-                                                .to_string(),
-                                        })
+                                    .map(|m| LLMModel {
+                                        name: m["name"].as_str().unwrap_or("unknown").to_string(),
+                                        size: "unknown".to_string(),
+                                        context_length: 4096,
+                                        quantization: None,
+                                        description: "Ollama model".to_string(),
                                     })
                                     .collect::<Vec<_>>();
                                 Ok(models)
                             },
-                            Err(e) => Err(format!("Failed to parse Ollama response: {}", e))
+                            Err(e) => Err(Box::new(NexaError::LLMError(format!("Failed to parse Ollama response: {}", e))))
                         }
                     },
-                    Err(e) => Err(format!("Failed to connect to Ollama API: {}", e))
+                    Err(e) => Err(Box::new(NexaError::LLMError(format!("Failed to connect to Ollama API: {}", e))))
                 }
             },
-            _ => Err(format!("Unsupported LLM provider: {}", provider))
+            _ => Err(Box::new(NexaError::LLMError(format!("Unsupported LLM provider: {}", provider))))
         }
     }
 
-    pub async fn select_model(&self, provider: &str, model: &str) -> Result<(), String> {
+    pub async fn select_model(&self, provider: &str, model: &str) -> Result<(), NexaError> {
         info!("Selecting model {} for provider {}", model, provider);
         match provider {
             "LMStudio" => {
-                // LM Studio doesn't require explicit model loading - it's done automatically
-                // Just verify the model exists
                 let client = reqwest::Client::new();
                 let response = client.get("http://localhost:1234/v1/models")
                     .send()
-                    .await
-                    .map_err(|e| format!("Failed to connect to LMStudio: {}", e))?;
+                    .await?;
                 
                 if response.status().is_success() {
                     match response.json::<serde_json::Value>().await {
                         Ok(json) => {
-                            let models = json["data"].as_array()  // Access the 'data' array
-                                .ok_or("Invalid response format: missing 'data' array")?;
+                            let models = json["data"].as_array()
+                                .ok_or_else(|| NexaError::LLMError("Invalid response format: missing 'data' array".to_string()))?;
                             if models.iter().any(|m| m["id"].as_str() == Some(model)) {
                                 Ok(())
                             } else {
-                                Err(format!("Model {} not found", model))
+                                Err(NexaError::LLMError(format!("Model {} not found", model)))
                             }
                         },
-                        Err(e) => Err(format!("Failed to parse response: {}", e))
+                        Err(e) => Err(NexaError::LLMError(format!("Failed to parse response: {}", e)))
                     }
                 } else {
                     let status = response.status();
                     let error_text = response.text().await
                         .unwrap_or_else(|_| "Unknown error".to_string());
-                    Err(format!("Failed to verify model ({}): {}", status, error_text))
+                    Err(NexaError::LLMError(format!("Failed to verify model ({}): {}", status, error_text)))
                 }
             },
             "Ollama" => {
-                // Example implementation for Ollama
                 let client = reqwest::Client::new();
                 let response = client.post("http://localhost:11434/api/pull")
                     .json(&serde_json::json!({
                         "name": model
                     }))
                     .send()
-                    .await
-                    .map_err(|e| format!("Failed to send request to Ollama: {}", e))?;
+                    .await?;
 
                 if response.status().is_success() {
                     Ok(())
                 } else {
-                    Err(format!("Failed to pull model: {}", response.status()))
+                    Err(NexaError::LLMError(format!("Failed to pull model: {}", response.status())))
                 }
             },
-            _ => Err(format!("Unsupported LLM provider: {}", provider))
+            _ => Err(NexaError::LLMError(format!("Unsupported LLM provider: {}", provider)))
         }
     }
 
-    async fn try_chat_completion(&self, client: &reqwest::Client, model: &str, test_prompt: &str) -> Result<String, String> {
-        let response = client.post("http://localhost:1234/v1/chat/completions")
-            .header("Content-Type", "application/json")
+    async fn try_chat_completion(&self, prompt: &str, model: &str) -> Result<String, NexaError> {
+        let client = reqwest::Client::new();
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|e| NexaError::Config(e.to_string()))?;
+        
+        let response = client
+            .post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", api_key))
             .json(&serde_json::json!({
                 "model": model,
-                "messages": [{"role": "user", "content": test_prompt}],
-                "temperature": 0.7,
-                "max_tokens": 10,
-                "stream": false
+                "messages": [{"role": "user", "content": prompt}]
             }))
             .send()
             .await
-            .map_err(|e| format!("Failed to send request: {}", e))?;
+            .map_err(|e| NexaError::LLMError(e.to_string()))?;
 
-        if response.status().is_success() {
-            match response.json::<serde_json::Value>().await {
-                Ok(json) => {
-                    let content = json["choices"][0]["message"]["content"]
-                        .as_str()
-                        .unwrap_or("No response")
-                        .to_string();
-                    
-                    // Extract usage statistics but only log at debug level
-                    if let Some(usage) = json.get("usage") {
-                        debug!("Token usage - prompt: {}, completion: {}, total: {}",
-                            usage["prompt_tokens"].as_u64().unwrap_or(0),
-                            usage["completion_tokens"].as_u64().unwrap_or(0),
-                            usage["total_tokens"].as_u64().unwrap_or(0)
-                        );
-                    }
+        let response_json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| NexaError::LLMError(e.to_string()))?;
 
-                    Ok(content)
-                },
-                Err(e) => Err(format!("Failed to parse response: {}", e))
-            }
-        } else {
-            let status = response.status();
-            let error_text = response.text().await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            Err(format!("Request failed ({}): {}", status, error_text))
-        }
+        response_json["choices"][0]["message"]["content"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| NexaError::LLMError("Failed to extract response content".to_string()))
     }
 
-    pub async fn test_model(&self, provider: &str, model: &str) -> Result<String, String> {
-        info!("Testing model {} for provider {}", model, provider);
-        let test_prompt = "Respond with 'OK' if you can process this message.";
+    pub async fn test_model(&self, model: &str, test_prompt: &str) -> Result<String, NexaError> {
+        let client = reqwest::Client::new();
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|e| NexaError::Config(e.to_string()))?;
         
-        match provider {
-            "LMStudio" => {
-                let client = reqwest::Client::new();
-                let max_retries = 5;
-                let wait_time = 30;
-                
-                for attempt in 0..=max_retries {
-                    match self.try_chat_completion(&client, model, test_prompt).await {
-                        Ok(content) => {
-                            info!("Model test successful");
-                            return Ok(content);
-                        },
-                        Err(e) => {
-                            if e.contains("is not loaded") || e.contains("Loading") {
-                                if attempt < max_retries {
-                                    info!("Model is loading, waiting {} seconds (attempt {}/{})", 
-                                        wait_time, attempt + 1, max_retries);
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(wait_time)).await;
-                                    continue;
-                                }
-                            }
-                            return Err(if attempt == max_retries {
-                                format!("Model failed to load after {} attempts: {}", max_retries, e)
-                            } else {
-                                e
-                            });
-                        }
-                    }
-                }
-                Err("Maximum retries exceeded".to_string())
-            },
-            "Ollama" => {
-                let client = reqwest::Client::new();
-                let response = client.post("http://localhost:11434/api/generate")
-                    .json(&serde_json::json!({
-                        "model": model,
-                        "prompt": test_prompt,
-                        "stream": false
-                    }))
-                    .send()
-                    .await
-                    .map_err(|e| format!("Failed to send request to Ollama: {}", e))?;
+        let response = client
+            .post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": test_prompt}]
+            }))
+            .send()
+            .await
+            .map_err(|e| NexaError::LLMError(format!("Request failed: {}", e)))?;
 
-                if response.status().is_success() {
-                    match response.json::<serde_json::Value>().await {
-                        Ok(json) => {
-                            let content = json["response"]
-                                .as_str()
-                                .unwrap_or("No response")
-                                .to_string();
-                            Ok(content)
-                        },
-                        Err(e) => Err(format!("Failed to parse response: {}", e))
-                    }
-                } else {
-                    Err(format!("Request failed: {}", response.status()))
-                }
-            },
-            _ => Err(format!("Unsupported LLM provider: {}", provider))
-        }
+        let response_json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| NexaError::LLMError(format!("JSON parsing failed: {}", e)))?;
+
+        response_json["choices"][0]["message"]["content"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| NexaError::LLMError("Failed to extract response content".to_string()))
     }
 
     /// Creates a new workflow
-    pub async fn create_workflow(&self, name: String, steps: Vec<WorkflowStep>) -> Result<AgentWorkflow, String> {
+    pub async fn create_workflow(&self, name: String, steps: Vec<WorkflowStep>) -> Result<AgentWorkflow, Box<dyn std::error::Error>> {
         info!("Creating workflow {} with {} steps", name, steps.len());
         
         // Validate all agent IDs exist
@@ -827,7 +691,7 @@ impl CliHandler {
     }
 
     /// Executes a workflow
-    pub async fn execute_workflow(&self, workflow_id: &str) -> Result<(), String> {
+    pub async fn execute_workflow(&self, workflow_id: &str) -> Result<(), NexaError> {
         info!("Executing workflow {}", workflow_id);
         
         let mut workflow = self.get_workflow(workflow_id).await?;
@@ -861,14 +725,14 @@ impl CliHandler {
                         Err(e) => {
                             workflow.status = WorkflowStatus::Failed;
                             self.save_workflow(&workflow).await?;
-                            return Err(format!("Step {} failed: {}", index, e));
+                            return Err(NexaError::System(format!("Step {} failed: {}", index, e)));
                         }
                     }
                 }
             }
             
             if !executed_any && completed_steps.len() < workflow.steps.len() {
-                return Err("Workflow deadlocked - circular dependencies detected".to_string());
+                return Err(NexaError::System("Workflow deadlocked - circular dependencies detected".to_string()));
             }
         }
         
@@ -880,105 +744,65 @@ impl CliHandler {
     }
 
     /// Executes a single workflow step
-    async fn execute_workflow_step(&self, step: &WorkflowStep) -> Result<String, String> {
+    async fn execute_workflow_step(&self, step: &WorkflowStep) -> Result<String, NexaError> {
         let agent = self.get_agent(&step.agent_id).await?;
         
-        // Prepare retry policy
-        let retry_policy = step.retry_policy.as_ref()
-            .unwrap_or(&agent.config.retry_policy);
+        // Execute with timeout
+        let timeout = step.timeout_seconds.unwrap_or(60); // Default 60 second timeout
             
-        // Prepare timeout
-        let timeout = step.timeout_seconds
-            .unwrap_or(agent.config.timeout_seconds);
-            
-        // Execute with retries and timeout
-        let mut last_error = None;
-        for attempt in 0..=retry_policy.max_retries {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(timeout),
-                self.execute_agent_action(&agent, &step.action)
-            ).await {
-                Ok(result) => match result {
-                    Ok(output) => return Ok(output),
-                    Err(e) => {
-                        last_error = Some(e);
-                        if attempt < retry_policy.max_retries {
-                            let backoff = std::cmp::min(
-                                retry_policy.backoff_ms * (2_u64.pow(attempt)),
-                                retry_policy.max_backoff_ms
-                            );
-                            tokio::time::sleep(tokio::time::Duration::from_millis(backoff)).await;
-                        }
-                    }
-                },
-                Err(_) => {
-                    return Err(format!("Step execution timed out after {} seconds", timeout));
-                }
-            }
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout),
+            self.execute_agent_action(&agent, &step.action)
+        ).await {
+            Ok(result) => result.map_err(|e| NexaError::LLMError(e.to_string())),
+            Err(_) => Err(NexaError::LLMError(format!("Step execution timed out after {} seconds", timeout)))
         }
-        
-        Err(last_error.unwrap_or_else(|| "Unknown error".to_string()))
     }
 
     /// Executes a specific action using an agent
-    async fn execute_agent_action(&self, agent: &Agent, action: &AgentAction) -> Result<String, String> {
-        let client = reqwest::Client::new();
-        
+    pub async fn execute_agent_action(&self, agent: &Agent, action: &AgentAction) -> Result<String, Box<dyn std::error::Error>> {
         match action {
-            AgentAction::ProcessText { input, _max_tokens } => {
-                self.try_chat_completion(&client, &agent.config.llm_model, input).await
+            AgentAction::ProcessText { input, max_tokens } => {
+                Ok(self.try_chat_completion(input, &agent.config.llm_model).await?)
             },
             AgentAction::GenerateCode { prompt, language } => {
                 let code_prompt = format!("Generate {} code for: {}", language, prompt);
-                self.try_chat_completion(&client, &agent.config.llm_model, &code_prompt).await
+                Ok(self.try_chat_completion(&code_prompt, &agent.config.llm_model).await?)
             },
             AgentAction::AnalyzeCode { code, aspects } => {
                 let analysis_prompt = format!(
-                    "Analyze the following code, focusing on {}: \n\n{}",
-                    aspects.join(", "),
+                    "Analyze this code focusing on these aspects: {}\n\nCode:\n{}", 
+                    aspects.join(", "), 
                     code
                 );
-                self.try_chat_completion(&client, &agent.config.llm_model, &analysis_prompt).await
+                Ok(self.try_chat_completion(&analysis_prompt, &agent.config.llm_model).await?)
             },
             AgentAction::CustomTask { task_type, parameters } => {
-                // Handle custom task types
                 let prompt = format!(
-                    "Execute {} task with parameters: {}",
+                    "Execute custom task of type '{}' with parameters:\n{}", 
                     task_type,
                     serde_json::to_string_pretty(parameters).unwrap_or_default()
                 );
-                self.try_chat_completion(&client, &agent.config.llm_model, &prompt).await
+                Ok(self.try_chat_completion(&prompt, &agent.config.llm_model).await?)
             }
         }
     }
 
     /// Saves a workflow to persistent storage
-    async fn save_workflow(&self, workflow: &AgentWorkflow) -> Result<(), String> {
+    async fn save_workflow(&self, workflow: &AgentWorkflow) -> Result<(), Box<dyn std::error::Error>> {
         let path = self.get_workflow_file_path(&workflow.id);
-        
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("Failed to create workflow directory: {}", e))?;
-        }
-        
-        let content = serde_json::to_string_pretty(workflow)
-            .map_err(|e| format!("Failed to serialize workflow data: {}", e))?;
-            
-        tokio::fs::write(&path, content)
-            .await
-            .map_err(|e| format!("Failed to write workflow file: {}", e))
+        let content = serde_json::to_string_pretty(workflow)?;
+        tokio::fs::write(&path, content).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 
     /// Gets a workflow by ID
-    async fn get_workflow(&self, workflow_id: &str) -> Result<AgentWorkflow, String> {
+    async fn get_workflow(&self, workflow_id: &str) -> Result<AgentWorkflow, Box<dyn std::error::Error>> {
         let path = self.get_workflow_file_path(workflow_id);
         let content = tokio::fs::read_to_string(&path)
             .await
-            .map_err(|e| format!("Failed to read workflow file: {}", e))?;
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse workflow data: {}", e))
+        serde_json::from_str(&content).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 
     /// Gets the file path for a workflow's persistent storage
@@ -988,7 +812,7 @@ impl CliHandler {
     }
 
     /// Lists all workflows
-    pub async fn list_workflows(&self) -> Result<Vec<AgentWorkflow>, String> {
+    pub async fn list_workflows(&self) -> Result<Vec<AgentWorkflow>, Box<dyn std::error::Error>> {
         let workflows_dir = std::path::PathBuf::from("/tmp/nexa/workflows");
         
         if !workflows_dir.exists() {
@@ -998,7 +822,7 @@ impl CliHandler {
         let mut workflows = Vec::new();
         let mut read_dir = tokio::fs::read_dir(&workflows_dir)
             .await
-            .map_err(|e| format!("Failed to read workflows directory: {}", e))?;
+            .map_err(|e| Box::new(e))?;
             
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
@@ -1011,26 +835,28 @@ impl CliHandler {
         Ok(workflows)
     }
 
-    pub async fn update_agent_config(&self, id: String, config: AgentConfig) -> Result<(), String> {
+    pub async fn update_agent_config(&self, id: String, config: AgentConfig) -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(mut agent) = self.get_agent(&id).await {
             agent.config = config;
-            self.save_agent(&agent).await
+            Ok(self.save_agent(&agent).await?)
         } else {
-            Err(format!("Agent {} not found", id))
+            Err(Box::new(NexaError::Agent(format!("Agent {} not found", id))))
         }
     }
 
-    pub async fn stop_agent(&self, agent_id: &str) -> Result<(), String> {
-        let agent = self.get_agent(agent_id).await?;
+    pub async fn stop_agent(&self, agent_id: &str) -> Result<(), NexaError> {
+        let mut agent = self.get_agent(agent_id).await?;
         
-        // Update agent status to Offline
+        if agent.status == AgentStatus::Offline {
+            return Err(NexaError::Agent("Agent is already stopped".to_string()));
+        }
+        
         let mut updated_agent = agent.clone();
         updated_agent.status = AgentStatus::Offline;
+        updated_agent.last_active = Utc::now();
         
-        // Save the updated agent state
         self.save_agent(&updated_agent).await?;
         
-        // Notify any connected clients/systems
         if let Some(parent_id) = &agent.parent_id {
             if let Ok(mut parent) = self.get_agent(parent_id).await {
                 parent.children.retain(|id| id != agent_id);
@@ -1041,9 +867,61 @@ impl CliHandler {
         Ok(())
     }
 
-    pub async fn get_agent_config(&self, agent_id: &str) -> Result<AgentConfig, String> {
+    pub async fn get_agent_config(&self, agent_id: &str) -> Result<AgentConfig, Box<dyn std::error::Error>> {
         let agent = self.get_agent(agent_id).await?;
         Ok(agent.config)
+    }
+
+    pub async fn test_agent_with_prompt(&mut self, agent: &mut Agent, test_prompt: &str) -> Result<String, NexaError> {
+        let result = self.test_model(&agent.config.llm_model, test_prompt).await;
+        
+        match result {
+            Ok(response) => {
+                agent.metrics.tasks_completed += 1;
+                agent.status = AgentStatus::Idle;
+                agent.last_active = Utc::now();
+                agent.last_heartbeat = Utc::now();
+                Ok(response)
+            }
+            Err(e) => {
+                agent.metrics.tasks_failed += 1;
+                agent.status = AgentStatus::Offline;
+                agent.last_heartbeat = Utc::now();
+                Err(e)
+            }
+        }
+    }
+
+    pub fn create_new_agent(&self, id: String, name: String, capabilities: Vec<String>) -> Agent {
+        Agent {
+            id,
+            name,
+            capabilities,
+            status: AgentStatus::Offline,
+            current_task: None,
+            last_heartbeat: Utc::now(),
+            parent_id: None,
+            children: Vec::new(),
+            last_active: Utc::now(),
+            config: AgentConfig::default(),
+            metrics: AgentMetrics::default(),
+            workflows: Vec::new(),
+            supported_actions: Vec::new(),
+        }
+    }
+
+    pub fn handle_error(&self, error: Box<dyn std::error::Error>) -> NexaError {
+        NexaError::System(error.to_string())
+    }
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            backoff_ms: 1000,
+            max_backoff_ms: 10000,
+        }
     }
 }
 

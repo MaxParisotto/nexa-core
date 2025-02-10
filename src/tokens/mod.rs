@@ -23,15 +23,15 @@ pub enum ModelType {
     Custom(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct TokenUsage {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenMetrics {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
     pub total_tokens: usize,
     pub cost: f64,
 }
 
-impl Default for TokenUsage {
+impl Default for TokenMetrics {
     fn default() -> Self {
         Self {
             prompt_tokens: 0,
@@ -45,7 +45,7 @@ impl Default for TokenUsage {
 #[derive(Debug, Clone)]
 pub struct UsageRecord {
     pub model: ModelType,
-    pub usage: TokenUsage,
+    pub usage: TokenMetrics,
     pub timestamp: DateTime<Utc>,
     pub metadata: HashMap<String, String>,
 }
@@ -98,7 +98,7 @@ impl TokenManager {
             _ => 0.0,
         };
 
-        let usage = TokenUsage {
+        let usage = TokenMetrics {
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
@@ -128,13 +128,13 @@ impl TokenManager {
     }
 
     /// Get total usage for a time period
-    pub async fn get_usage_since(&self, since: DateTime<Utc>) -> TokenUsage {
+    pub async fn get_usage_since(&self, since: DateTime<Utc>) -> TokenMetrics {
         let records = self.usage_records.read().await;
         records
             .iter()
             .filter(|r| r.timestamp >= since)
             .fold(
-                TokenUsage {
+                TokenMetrics {
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     total_tokens: 0,
@@ -151,13 +151,13 @@ impl TokenManager {
     }
 
     /// Get usage by model type
-    pub async fn get_usage_by_model(&self, model: ModelType) -> TokenUsage {
+    pub async fn get_usage_by_model(&self, model: ModelType) -> TokenMetrics {
         let records = self.usage_records.read().await;
         records
             .iter()
             .filter(|r| r.model == model)
             .fold(
-                TokenUsage {
+                TokenMetrics {
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     total_tokens: 0,

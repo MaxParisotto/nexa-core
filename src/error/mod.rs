@@ -1,6 +1,8 @@
 use thiserror::Error;
 use std::io;
 use tokio_tungstenite::tungstenite;
+use std::error::Error as StdError;
+use reqwest;
 
 #[derive(Debug, Error, Clone)]
 pub enum NexaError {
@@ -37,6 +39,9 @@ pub enum NexaError {
     
     #[error("Control error: {0}")]
     Control(String),
+    
+    #[error("LLM error: {0}")]
+    LLMError(String),
 }
 
 impl From<&str> for NexaError {
@@ -59,7 +64,7 @@ impl From<io::Error> for NexaError {
 
 impl From<tungstenite::Error> for NexaError {
     fn from(e: tungstenite::Error) -> Self {
-        NexaError::WebSocket(e.to_string())
+        NexaError::Server(e.to_string())
     }
 }
 
@@ -78,5 +83,17 @@ impl From<serde_yaml::Error> for NexaError {
 impl From<ctrlc::Error> for NexaError {
     fn from(e: ctrlc::Error) -> Self {
         NexaError::Control(e.to_string())
+    }
+}
+
+impl From<reqwest::Error> for NexaError {
+    fn from(err: reqwest::Error) -> Self {
+        NexaError::LLMError(err.to_string())
+    }
+}
+
+impl From<Box<dyn StdError>> for NexaError {
+    fn from(err: Box<dyn StdError>) -> Self {
+        NexaError::System(err.to_string())
     }
 } 

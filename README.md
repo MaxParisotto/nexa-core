@@ -269,3 +269,79 @@ For questions or support:
 
 - GitHub Issues: [Project Issues](https://github.com/yourusername/nexa-utils/issues)
 - Email: <support@nexa-utils.com>
+
+A command-line interface for managing AI agents and workflows.
+
+## Installation
+
+```bash
+cargo install --path .
+```
+
+## Usage
+
+```bash
+# Start the server
+nexa-core start [--port <PORT>]
+
+# Stop the server
+nexa-core stop
+
+# Check server status
+nexa-core status
+
+# List agents
+nexa-core agents [--status <STATUS>]
+
+# Create a new agent
+nexa-core create-agent --name <NAME> [--model <MODEL>] [--provider <PROVIDER>]
+
+# Stop an agent
+nexa-core stop-agent --id <ID>
+
+# List available models
+nexa-core models --provider <PROVIDER>
+
+# Add LLM server
+nexa-core add-server --provider <PROVIDER> --url <URL>
+
+# Remove LLM server
+nexa-core remove-server --provider <PROVIDER>
+
+# Create a task
+nexa-core create-task --description <DESC> [--priority <PRIORITY>] [--agent-id <ID>]
+
+# List tasks
+nexa-core tasks
+
+# List workflows
+nexa-core workflows
+
+# Create a workflow
+nexa-core create-workflow --name <NAME> --steps <STEPS>
+
+# Execute a workflow
+nexa-core execute-workflow --id <ID>
+```
+
+## Environment Variables
+
+- `RUST_LOG`: Set logging level (e.g., `info`, `debug`, `trace`)
+- `NEXA_PORT`: Default port for the server (default: 8080)
+
+## Development
+
+```bash
+# Build the project
+cargo build
+
+# Run tests
+cargo test
+
+# Run with logging
+RUST_LOG=info cargo run -- [COMMAND]
+```
+
+## License
+
+MIT License

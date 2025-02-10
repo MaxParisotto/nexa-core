@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nexa_core::mcp::loadbalancer::*;
 use tokio::runtime::Runtime;
 use std::time::Duration;
@@ -127,5 +127,22 @@ pub fn loadbalancer_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, connection_pool_benchmark, load_balancer_benchmark, loadbalancer_benchmark);
+fn loadbalancer_operations(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+
+    c.bench_function("loadbalancer_basic_ops", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                // Simulate basic load balancer operations
+                black_box(async {
+                    tokio::time::sleep(tokio::time::Duration::from_micros(1)).await;
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await
+            })
+        })
+    });
+}
+
+criterion_group!(benches, connection_pool_benchmark, load_balancer_benchmark, loadbalancer_benchmark, loadbalancer_operations);
 criterion_main!(benches); 

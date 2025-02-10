@@ -1,60 +1,179 @@
 use clap::Parser;
-use log::{error, info};
-use nexa_core::cli::{Cli, Commands};
-use std::path::PathBuf;
+use log::{info, error};
 use std::process;
+use crate::cli::Cli;
+use crate::cli::Commands;
+use crate::cli::CliHandler;
+use crate::types::agent::AgentConfig;
+use crate::llm::system_helper::TaskPriority;
+
+mod cli;
+mod types;
+mod llm;
+mod error;
+mod server;
+mod api;
+mod models;
+mod monitoring;
+mod memory;
+mod tokens;
+mod settings;
+mod utils;
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging system
-    let log_dir = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("nexa/logs");
-    
-    nexa_core::logging::init(log_dir.clone())
-        .expect("Failed to initialize logger");
+    // Initialize logging
+    env_logger::init();
 
-    info!("Starting Nexa Core v{}", env!("CARGO_PKG_VERSION"));
-    info!("Log directory: {}", log_dir.display());
-
+    // Parse command line arguments
     let cli = Cli::parse();
-    let cli_handler = nexa_core::cli::CliHandler::new();
+    let handler = CliHandler::new();
 
+    // Process commands
     match cli.command {
-        Some(Commands::Start) => {
+        Some(Commands::Start { port }) => {
             info!("Starting server...");
-            if let Err(e) = cli_handler.start(None).await {
+            let port_str = port.map(|p| p.to_string());
+            if let Err(e) = handler.start(port_str.as_deref()).await {
                 error!("Failed to start server: {}", e);
                 process::exit(1);
             }
         }
         Some(Commands::Stop) => {
             info!("Stopping server...");
-            if let Err(e) = cli_handler.stop().await {
+            if let Err(e) = handler.stop().await {
                 error!("Failed to stop server: {}", e);
                 process::exit(1);
             }
         }
         Some(Commands::Status) => {
             info!("Checking server status...");
-            if let Err(e) = cli_handler.status().await {
+            if let Err(e) = handler.status().await {
                 error!("Failed to get server status: {}", e);
                 process::exit(1);
             }
         }
-        Some(Commands::Gui) => {
-            info!("Starting GUI...");
-            if let Err(e) = nexa_core::gui::app::main() {
-                error!("Failed to start GUI: {}", e);
+        Some(Commands::Agents { status }) => {
+            let status_enum = status.map(|s| s.parse().unwrap_or_default());
+            match handler.list_agents(status_enum).await {
+                Ok(agents) => {
+                    println!("\nAgents:");
+                    for agent in agents {
+                        println!("ID: {}", agent.id);
+                        println!("Name: {}", agent.name);
+                        println!("Status: {:?}", agent.status);
+                        println!("Model: {}", agent.config.llm_model);
+                        println!("Provider: {}", agent.config.llm_provider);
+                        println!("---");
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to list agents: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        Some(Commands::CreateAgent { name, model, provider }) => {
+            let mut config = AgentConfig::default();
+            if let Some(m) = model {
+                config.llm_model = m;
+            }
+            if let Some(p) = provider {
+                config.llm_provider = p;
+            }
+            
+            match handler.create_agent(name, config).await {
+                Ok(agent) => println!("Created agent: {}", agent.id),
+                Err(e) => {
+                    error!("Failed to create agent: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        Some(Commands::StopAgent { id }) => {
+            if let Err(e) = handler.stop_agent(&id).await {
+                error!("Failed to stop agent: {}", e);
+                process::exit(1);
+            }
+        }
+        Some(Commands::Models { provider }) => {
+            match handler.list_models(&provider).await {
+                Ok(models) => {
+                    println!("\nAvailable Models:");
+                    for model in models {
+                        println!("Name: {}", model.name);
+                        println!("Size: {}", model.size);
+                        println!("Context Length: {}", model.context_length);
+                        println!("---");
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to list models: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        Some(Commands::AddServer { provider, url }) => {
+            if let Err(e) = handler.add_llm_server(&provider, &url).await {
+                error!("Failed to add server: {}", e);
+                process::exit(1);
+            }
+        }
+        Some(Commands::RemoveServer { provider }) => {
+            if let Err(e) = handler.remove_llm_server(&provider).await {
+                error!("Failed to remove server: {}", e);
+                process::exit(1);
+            }
+        }
+        Some(Commands::CreateTask { description, priority, agent_id }) => {
+            let priority = match priority.to_lowercase().as_str() {
+                "low" => TaskPriority::Low,
+                "medium" => TaskPriority::Medium,
+                "high" => TaskPriority::High,
+                "critical" => TaskPriority::Critical,
+                _ => TaskPriority::Medium,
+            };
+            
+            if let Err(e) = handler.create_task(description, priority, agent_id).await {
+                error!("Failed to create task: {}", e);
+                process::exit(1);
+            }
+        }
+        Some(Commands::Tasks) => {
+            // Implement task listing
+            println!("Task listing not implemented yet");
+        }
+        Some(Commands::Workflows) => {
+            match handler.list_workflows().await {
+                Ok(workflows) => {
+                    println!("\nWorkflows:");
+                    for workflow in workflows {
+                        println!("ID: {}", workflow.id);
+                        println!("Name: {}", workflow.name);
+                        println!("Status: {:?}", workflow.status);
+                        println!("Steps: {}", workflow.steps.len());
+                        println!("---");
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to list workflows: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        Some(Commands::CreateWorkflow { name, steps }) => {
+            // Parse steps and create workflow
+            println!("Workflow creation not implemented yet");
+        }
+        Some(Commands::ExecuteWorkflow { id }) => {
+            if let Err(e) = handler.execute_workflow(&id).await {
+                error!("Failed to execute workflow: {}", e);
                 process::exit(1);
             }
         }
         None => {
-            info!("No command specified, starting GUI...");
-            if let Err(e) = nexa_core::gui::app::main() {
-                error!("Failed to start GUI: {}", e);
-                process::exit(1);
-            }
+            println!("No command specified. Use --help for usage information.");
+            process::exit(1);
         }
     }
 } 
