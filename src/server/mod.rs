@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, atomic::{AtomicBool, Ordering}},
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, SystemTime},
     net::SocketAddr,
 };

@@ -7,10 +7,10 @@ pub fn header<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
     container(
         Text::new(title)
             .size(32)
-            .style(styles::header_text)
+            .style(|theme| styles::header_text(theme))
     )
     .padding(20)
-    .style(styles::panel_content)
+    .style(|theme| styles::panel_content(theme))
     .into()
 }
 
@@ -19,13 +19,13 @@ pub fn section<'a, Message: 'a>(title: &'a str, content: Element<'a, Message>) -
         iced::widget::column![
             Text::new(title)
                 .size(24)
-                .style(styles::header_text),
+                .style(|theme| styles::header_text(theme)),
             content
         ]
         .spacing(20)
     )
     .padding(20)
-    .style(styles::panel_content)
+    .style(|theme| styles::panel_content(theme))
     .into()
 }
 

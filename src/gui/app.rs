@@ -1,13 +1,10 @@
 use iced::{
     keyboard,
-    widget::{
-        button, checkbox, column, container, horizontal_rule, horizontal_space, pick_list, row, text,
-        text_input, vertical_space, Text, Row,
-    },
+    widget::{button, column, container, Text, Row},
     Task,
-    Element, Length, Size, Subscription, window,
+    Element, Length, Size, Subscription,
 };
-use log::{debug, error, info};
+use log::{debug, error};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use std::path::PathBuf;
@@ -28,7 +25,6 @@ use crate::{
     settings::{SettingsManager, LLMServerConfig},
     logging,
     error::NexaError,
-    cli::CliHandler,
 };
 
 // Constants for UI configuration
@@ -508,12 +504,14 @@ impl Example {
                 self.state = state;
                 Task::none()
             }
-            _ => Task::none()
         }
     }
 
     fn view(&self) -> Element<Message> {
+        // Generate dock view
         let dock = self.view_dock();
+
+        // Generate main content based on current view
         let content = match self.current_view {
             View::Dashboard => {
                 let metrics = self.get_metrics();
@@ -528,10 +526,10 @@ impl Example {
                         container(
                             Text::new("Agent not found")
                                 .size(32)
-                                .style(styles::header_text)
+                                .style(|theme| styles::header_text(theme))
                         )
                         .padding(20)
-                        .style(styles::panel_content)
+                        .style(|theme| styles::panel_content(theme))
                         .into()
                     }
                 } else {
@@ -552,17 +550,10 @@ impl Example {
                     &self.llm_settings.available_models,
                 )
                 .map(|msg| Message::SettingsMessage(msg));
-
                 container(
-                    column![
-                        header,
-                        add_server_form,
-                        servers_list
-                    ]
-                    .spacing(20)
+                    iced::widget::column![header, add_server_form, servers_list]
+                        .spacing(10)
                 )
-                .padding(20)
-                .style(styles::panel_content)
                 .into()
             }
             View::Logs => {
@@ -576,17 +567,15 @@ impl Example {
                 tasks::view_task_header()
                     .map(Message::TaskMessage)
             }
+            _ => container(Text::new("View not implemented")).into(),
         };
 
+        // Combine main content and dock in a column layout
         container(
-            column![
-                dock,
-                content,
-            ]
-            .spacing(20)
+            iced::widget::column![content, dock]
+                .spacing(10)
+                .padding(10)
         )
-        .padding(20)
-        .style(styles::main_container)
         .into()
     }
 

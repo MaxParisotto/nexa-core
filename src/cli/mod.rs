@@ -14,8 +14,6 @@ use nexa_core::error::NexaError;
 use sysinfo;
 use std::process;
 use std::fs;
-use nix::sys::signal::{self, Signal};
-use nix::unistd::Pid;
 use nix::libc;
 use nexa_core::llm::system_helper::TaskPriority;
 use reqwest;
@@ -24,6 +22,7 @@ use uuid;
 use chrono;
 use serde;
 use nexa_core::llm::LLMConnection;
+use tokio::sync::mpsc;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
