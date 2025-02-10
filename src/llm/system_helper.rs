@@ -156,6 +156,10 @@ mod tests {
         };
         let response = helper.create_task(request).await;
         assert!(response.is_ok());
+        if let Ok(task) = response {
+            assert_eq!(task.title, "Generated Task");
+            assert!(!task.id.is_empty());
+        }
     }
 
     #[tokio::test]
@@ -164,6 +168,7 @@ mod tests {
         
         // Add some test templates
         helper.add_task_template("Monitor system resources".to_string()).await.unwrap();
+        helper.add_task_template("Check network connectivity".to_string()).await.unwrap();
         
         let suggestions = helper.suggest_tasks().await.unwrap();
         assert!(!suggestions.is_empty(), "Should suggest at least one task");

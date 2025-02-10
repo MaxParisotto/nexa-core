@@ -6,6 +6,7 @@ use crate::cli::Commands;
 use crate::cli::CliHandler;
 use crate::types::agent::AgentConfig;
 use crate::llm::system_helper::TaskPriority;
+use crate::types::workflow::{WorkflowStep, AgentAction, RetryPolicy};
 
 mod cli;
 mod types;
@@ -19,6 +20,7 @@ mod memory;
 mod tokens;
 mod settings;
 mod utils;
+mod config;
 
 #[tokio::main]
 async fn main() {
@@ -102,8 +104,11 @@ async fn main() {
                     println!("\nAvailable Models:");
                     for model in models {
                         println!("Name: {}", model.name);
-                        println!("Size: {}", model.size);
-                        println!("Context Length: {}", model.context_length);
+                        println!("Provider: {}", model.provider);
+                        println!("Description: {}", model.description);
+                        if let Some(quant) = model.quantization {
+                            println!("Quantization: {}", quant);
+                        }
                         println!("---");
                     }
                 }
@@ -162,8 +167,31 @@ async fn main() {
             }
         }
         Some(Commands::CreateWorkflow { name, steps }) => {
-            // Parse steps and create workflow
-            println!("Workflow creation not implemented yet");
+            let workflow_steps = steps.iter()
+                .map(|step| WorkflowStep {
+                    agent_id: "default".to_string(), // This should be configurable
+                    action: AgentAction::ProcessText {
+                        input: step.clone(),
+                        max_tokens: 1000,
+                    },
+                    dependencies: Vec::new(),
+                    timeout_seconds: Some(60),
+                    retry_policy: Some(RetryPolicy::default()),
+                })
+                .collect();
+
+            match handler.create_workflow(name, workflow_steps).await {
+                Ok(workflow) => {
+                    println!("Created workflow:");
+                    println!("ID: {}", workflow.id);
+                    println!("Name: {}", workflow.name);
+                    println!("Steps: {}", workflow.steps.len());
+                }
+                Err(e) => {
+                    error!("Failed to create workflow: {}", e);
+                    process::exit(1);
+                }
+            }
         }
         Some(Commands::ExecuteWorkflow { id }) => {
             if let Err(e) = handler.execute_workflow(&id).await {

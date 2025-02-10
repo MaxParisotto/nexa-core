@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
+
 //! CLI Handler for Nexa Utils
 //! 
 //! Provides command-line interface functionality for:
@@ -15,20 +17,31 @@ use reqwest;
 use serde_json;
 use uuid;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use crate::error::NexaError;
 use crate::llm::system_helper::TaskPriority;
 use crate::types::agent::{Agent, AgentStatus, AgentConfig, AgentMetrics};
 use crate::types::workflow::{WorkflowStatus, WorkflowStep, AgentWorkflow, AgentAction, RetryPolicy};
 use crate::server::Server;
+use std::sync::Arc;
+use crate::llm;
 
 #[derive(Debug, Clone)]
 pub struct LLMModel {
     pub name: String,
-    pub size: String,
-    pub context_length: usize,
-    pub quantization: Option<String>,
+    pub provider: String,
     pub description: String,
+    pub quantization: Option<String>,
+}
+
+impl LLMModel {
+    pub fn new(name: String, provider: String, description: String, quantization: Option<String>) -> Self {
+        Self {
+            name,
+            provider,
+            description,
+            quantization,
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -145,6 +158,7 @@ pub enum Commands {
 pub struct CliHandler {
     pid_file: PathBuf,
     server: Server,
+    llm_client: Arc<llm::LLMClient>,
 }
 
 impl CliHandler {
@@ -156,7 +170,14 @@ impl CliHandler {
 
     pub fn with_paths(pid_file: PathBuf, socket_path: PathBuf) -> Self {
         let server = Server::new(pid_file.clone(), socket_path);
-        Self { pid_file, server }
+        let llm_config = llm::LLMConfig::default();
+        let llm_client = Arc::new(llm::LLMClient::new(llm_config).expect("Failed to initialize LLM client"));
+        
+        Self { 
+            pid_file, 
+            server,
+            llm_client,
+        }
     }
 
     pub fn get_server(&self) -> &Server {
@@ -172,7 +193,7 @@ impl CliHandler {
         false
     }
 
-    pub async fn start(&self, port: Option<&str>) -> Result<(), NexaError> {
+    pub async fn start(&self, _port: Option<&str>) -> Result<(), NexaError> {
         if self.is_server_running() {
             return Err(NexaError::System("Server is already running".to_string()));
         }
@@ -238,16 +259,6 @@ impl CliHandler {
                 .map_err(|e| NexaError::Io(e.to_string()))?;
             status.push_str(&format!("Server is running on 0.0.0.0:8080\n"));
             status.push_str(&format!("PID: {}\n", pid.trim()));
-
-            let metrics = self.server.get_metrics().await;
-            status.push_str(&format!("\nServer Metrics:\n"));
-            status.push_str(&format!("  Total Connections: {}\n", metrics.total_connections));
-            status.push_str(&format!("  Active Connections: {}\n", metrics.active_connections));
-            status.push_str(&format!("  Failed Connections: {}\n", metrics.failed_connections));
-            if let Some(last_error) = metrics.last_error {
-                status.push_str(&format!("  Last Error: {}\n", last_error));
-            }
-            status.push_str(&format!("  Uptime: {:?}\n", metrics.uptime));
         }
 
         println!("{}", status);
@@ -290,9 +301,9 @@ impl CliHandler {
             agent.capabilities.join(", ")
         );
 
-        // Test the agent using its configured LLM
+        // Test the agent using the LLM client
         let start_time = std::time::Instant::now();
-        let result = self.try_chat_completion(&test_prompt, &agent.config.llm_model).await;
+        let result = self.llm_client.complete(&test_prompt).await;
 
         // Update agent metrics
         let mut updated_agent = agent.clone();
@@ -511,10 +522,9 @@ impl CliHandler {
                                     .iter()
                                     .map(|m| LLMModel {
                                         name: m["id"].as_str().unwrap_or("unknown").to_string(),
-                                        size: "unknown".to_string(),
-                                        context_length: 4096,
-                                        quantization: None,
+                                        provider: "LM Studio".to_string(),
                                         description: "LM Studio model".to_string(),
+                                        quantization: None,
                                     })
                                     .collect::<Vec<_>>();
                                 if models.is_empty() {
@@ -549,10 +559,9 @@ impl CliHandler {
                                     .iter()
                                     .map(|m| LLMModel {
                                         name: m["name"].as_str().unwrap_or("unknown").to_string(),
-                                        size: "unknown".to_string(),
-                                        context_length: 4096,
-                                        quantization: None,
+                                        provider: "Ollama".to_string(),
                                         description: "Ollama model".to_string(),
+                                        quantization: None,
                                     })
                                     .collect::<Vec<_>>();
                                 Ok(models)
@@ -762,7 +771,7 @@ impl CliHandler {
     /// Executes a specific action using an agent
     pub async fn execute_agent_action(&self, agent: &Agent, action: &AgentAction) -> Result<String, Box<dyn std::error::Error>> {
         match action {
-            AgentAction::ProcessText { input, max_tokens } => {
+            AgentAction::ProcessText { input, max_tokens: _ } => {
                 Ok(self.try_chat_completion(input, &agent.config.llm_model).await?)
             },
             AgentAction::GenerateCode { prompt, language } => {
@@ -845,7 +854,7 @@ impl CliHandler {
     }
 
     pub async fn stop_agent(&self, agent_id: &str) -> Result<(), NexaError> {
-        let mut agent = self.get_agent(agent_id).await?;
+        let agent = self.get_agent(agent_id).await?;
         
         if agent.status == AgentStatus::Offline {
             return Err(NexaError::Agent("Agent is already stopped".to_string()));
@@ -873,7 +882,7 @@ impl CliHandler {
     }
 
     pub async fn test_agent_with_prompt(&mut self, agent: &mut Agent, test_prompt: &str) -> Result<String, NexaError> {
-        let result = self.test_model(&agent.config.llm_model, test_prompt).await;
+        let result = self.llm_client.complete(test_prompt).await;
         
         match result {
             Ok(response) => {

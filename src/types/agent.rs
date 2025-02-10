@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
+
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use std::fmt;

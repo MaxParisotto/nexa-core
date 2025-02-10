@@ -1,5 +1,6 @@
 pub mod api;
 pub mod cli;
+pub mod config;
 pub mod error;
 pub mod llm;
 pub mod mcp;
@@ -15,6 +16,7 @@ pub mod utils;
 // Re-export commonly used types
 pub use models::agent::{Agent, Task, ModelAgentStatus as AgentStatus, TaskStatus};
 pub use llm::system_helper::TaskPriority;
+pub use crate::config::{MonitoringConfig, ServerConfig, LoggingConfig};
 
 // Error type
 pub use error::NexaError;

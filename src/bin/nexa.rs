@@ -87,8 +87,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("\nAvailable Models:");
                     for model in models {
                         println!("Name: {}", model.name);
-                        println!("Size: {}", model.size);
-                        println!("Context Length: {}", model.context_length);
+                        println!("Provider: {}", model.provider);
+                        println!("Description: {}", model.description);
+                        if let Some(quant) = model.quantization {
+                            println!("Quantization: {}", quant);
+                        }
                         println!("---");
                     }
                 }

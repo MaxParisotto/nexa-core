@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
+
 //! Token Usage Tracking System
 //! 
 //! This module provides token usage tracking and management:
@@ -14,7 +16,7 @@ use crate::error::NexaError;
 use crate::memory::{MemoryManager, ResourceType};
 use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ModelType {
     GPT4,
     GPT35,
@@ -105,7 +107,7 @@ impl TokenManager {
             cost,
         };
 
-        // Track memory allocation for tokens
+        // Track memory allocation for tokens using memory manager
         self.memory_manager
             .allocate(
                 format!("tokens-{:?}-{}", model, Utc::now().timestamp()),
@@ -115,7 +117,7 @@ impl TokenManager {
             )
             .await?;
 
-        // Record usage
+        // Record usage with all fields
         let mut records = self.usage_records.write().await;
         records.push(UsageRecord {
             model,
@@ -134,12 +136,7 @@ impl TokenManager {
             .iter()
             .filter(|r| r.timestamp >= since)
             .fold(
-                TokenMetrics {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                    cost: 0.0,
-                },
+                TokenMetrics::default(),
                 |mut acc, r| {
                     acc.prompt_tokens += r.usage.prompt_tokens;
                     acc.completion_tokens += r.usage.completion_tokens;
@@ -157,12 +154,7 @@ impl TokenManager {
             .iter()
             .filter(|r| r.model == model)
             .fold(
-                TokenMetrics {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                    cost: 0.0,
-                },
+                TokenMetrics::default(),
                 |mut acc, r| {
                     acc.prompt_tokens += r.usage.prompt_tokens;
                     acc.completion_tokens += r.usage.completion_tokens;

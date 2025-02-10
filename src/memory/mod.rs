@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
+
 //! Memory Management System
 //! 
 //! This module provides memory tracking and management capabilities:
@@ -107,9 +109,9 @@ impl MemoryManager {
         stats.peak_usage = stats.peak_usage.max(stats.total_used);
         stats.available = stats.total_allocated.saturating_sub(stats.total_used);
 
-        // Record allocation
+        // Record allocation with all fields
         allocations.insert(id, AllocationRecord {
-            resource_type,
+            resource_type: resource_type.clone(),
             size,
             timestamp: chrono::Utc::now(),
             metadata,
@@ -136,8 +138,7 @@ impl MemoryManager {
 
     /// Get current memory statistics
     pub async fn get_stats(&self) -> MemoryStats {
-        let stats = self.stats.read().await;
-        stats.clone()
+        self.stats.read().await.clone()
     }
 
     /// Get allocation records

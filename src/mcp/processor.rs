@@ -5,6 +5,7 @@ use crate::mcp::buffer::{BufferedMessage, MessageBuffer};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use num_cpus;
+use futures;
 
 /// Configuration for message processor
 #[derive(Debug, Clone)]
@@ -43,17 +44,17 @@ pub enum ProcessingResult {
 
 /// Message processor handles the processing of buffered messages
 pub struct MessageProcessor {
-    _config: ProcessorConfig,
+    config: ProcessorConfig,
     buffer: Arc<MessageBuffer>,
     workers: Vec<tokio::task::JoinHandle<()>>,
-    shutdown_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
 impl MessageProcessor {
     /// Create a new message processor
     pub fn new(config: ProcessorConfig, buffer: Arc<MessageBuffer>) -> Self {
         Self {
-            _config: config,
+            config,
             buffer,
             workers: Vec::new(),
             shutdown_tx: None,
@@ -68,9 +69,9 @@ impl MessageProcessor {
         let shutdown_rx = Arc::new(tokio::sync::Mutex::new(shutdown_rx));
 
         // Spawn worker tasks
-        for worker_id in 0..self._config.worker_count {
+        for worker_id in 0..self.config.worker_count {
             let buffer = self.buffer.clone();
-            let config = self._config.clone();
+            let config = self.config.clone();
             let shutdown_rx = shutdown_rx.clone();
 
             let handle = tokio::spawn(async move {
@@ -80,16 +81,37 @@ impl MessageProcessor {
             self.workers.push(handle);
         }
 
-        info!("Started {} message processor workers", self._config.worker_count);
+        info!("Started {} message processor workers", self.config.worker_count);
         Ok(())
     }
 
     /// Stop message processing
     pub async fn stop(&mut self) -> Result<(), NexaError> {
         if let Some(tx) = self.shutdown_tx.take() {
+            // Send shutdown signal
             let _ = tx.send(()).await;
+            
+            // Wait for all workers with timeout
+            let mut handles = Vec::new();
             for handle in self.workers.drain(..) {
-                let _ = handle.await;
+                handles.push(handle);
+            }
+
+            // Wait for all workers to complete with a timeout
+            let timeout_duration = Duration::from_secs(1);
+            let results = futures::future::join_all(
+                handles.into_iter().map(|handle| {
+                    tokio::time::timeout(timeout_duration, handle)
+                })
+            ).await;
+
+            // Log any workers that failed to stop in time
+            for (i, result) in results.iter().enumerate() {
+                match result {
+                    Ok(Ok(_)) => debug!("Worker {} stopped successfully", i + 1),
+                    Ok(Err(e)) => error!("Worker {} failed: {}", i + 1, e),
+                    Err(_) => error!("Worker {} failed to stop within timeout", i + 1),
+                }
             }
         }
         Ok(())
@@ -99,7 +121,7 @@ impl MessageProcessor {
     async fn worker_loop(
         worker_id: usize,
         buffer: Arc<MessageBuffer>,
-        _config: ProcessorConfig,
+        config: ProcessorConfig,
         shutdown_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<()>>>,
     ) {
         let mut shutdown_rx = shutdown_rx.lock().await;
@@ -113,16 +135,56 @@ impl MessageProcessor {
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
                     // Try to get next message
                     if let Some(msg) = buffer.pop_any().await {
-                        // Process message
-                        match Self::process_message(msg).await {
-                            ProcessingResult::Success => {
-                                debug!("Worker {} successfully processed message", worker_id);
+                        // Process message with timeout
+                        match tokio::time::timeout(
+                            config.timeout,
+                            Self::process_message(msg.clone())
+                        ).await {
+                            Ok(result) => {
+                                match result {
+                                    ProcessingResult::Success => {
+                                        debug!("Worker {} successfully processed message", worker_id);
+                                    }
+                                    ProcessingResult::Error(e) => {
+                                        error!("Worker {} failed to process message: {}", worker_id, e);
+                                        if msg.attempts < config.max_retries {
+                                            // Retry message after delay
+                                            let mut retry_msg = msg;
+                                            retry_msg.attempts += 1;
+                                            retry_msg.delay_until = Some(
+                                                std::time::SystemTime::now()
+                                                    .checked_add(config.retry_delay)
+                                                    .unwrap_or_else(|| std::time::SystemTime::now())
+                                            );
+                                            if let Err(e) = buffer.publish(retry_msg).await {
+                                                error!("Failed to requeue message: {}", e);
+                                            }
+                                        }
+                                    }
+                                    ProcessingResult::RetryAfter(delay) => {
+                                        debug!("Worker {} will retry message after {:?}", worker_id, delay);
+                                        let mut retry_msg = msg;
+                                        retry_msg.delay_until = Some(
+                                            std::time::SystemTime::now()
+                                                .checked_add(delay)
+                                                .unwrap_or_else(|| std::time::SystemTime::now())
+                                        );
+                                        if let Err(e) = buffer.publish(retry_msg).await {
+                                            error!("Failed to requeue message: {}", e);
+                                        }
+                                    }
+                                }
                             }
-                            ProcessingResult::Error(e) => {
-                                error!("Worker {} failed to process message: {}", worker_id, e);
-                            }
-                            ProcessingResult::RetryAfter(delay) => {
-                                debug!("Worker {} will retry message after {:?}", worker_id, delay);
+                            Err(_) => {
+                                error!("Worker {} message processing timed out", worker_id);
+                                // Handle timeout - maybe retry message
+                                if msg.attempts < config.max_retries {
+                                    let mut retry_msg = msg;
+                                    retry_msg.attempts += 1;
+                                    if let Err(e) = buffer.publish(retry_msg).await {
+                                        error!("Failed to requeue timed out message: {}", e);
+                                    }
+                                }
                             }
                         }
                     }
@@ -142,31 +204,12 @@ impl MessageProcessor {
             ProcessingResult::Success
         }
     }
-
-    pub async fn run(&mut self) {
-        loop {
-            if let Some(msg) = self.buffer.pop_any().await {
-                match Self::process_message(msg).await {
-                    ProcessingResult::Success => {
-                        debug!("Successfully processed message");
-                    }
-                    ProcessingResult::Error(e) => {
-                        error!("Failed to process message: {}", e);
-                    }
-                    ProcessingResult::RetryAfter(delay) => {
-                        debug!("Message will be retried after {:?}", delay);
-                    }
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
 }
 
 impl std::fmt::Debug for MessageProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MessageProcessor")
-            .field("buffer", &self.buffer)
+            .field("config", &self.config)
             .field("workers_count", &self.workers.len())
             .field("is_shutdown", &self.shutdown_tx.is_none())
             .finish()

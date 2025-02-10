@@ -36,6 +36,7 @@ use crate::mcp::buffer::{BufferedMessage, MessageBuffer, Priority, BufferConfig}
 use crate::monitoring::{SystemMetrics, SystemHealth};
 use crate::memory::{MemoryStats, ResourceType};
 use crate::mcp::tokens::{ModelType, TokenUsage};
+use crate::tokens::TokenMetrics;
 use crate::error::NexaError;
 use log::{error, info};
 
@@ -187,24 +188,20 @@ impl ServerControl {
     /// Check the health of the server.
     pub async fn check_health(&self) -> Result<SystemHealth, NexaError> {
         Ok(SystemHealth {
-            is_healthy: true,
-            message: "System healthy".to_string(),
-            timestamp: Utc::now(),
+            cpu_healthy: true,
+            memory_healthy: true,
+            overall_healthy: true,
         })
     }
     
     /// Retrieve server metrics.
     pub async fn get_metrics(&self) -> Result<SystemMetrics, NexaError> {
         Ok(SystemMetrics {
-            cpu_usage: 10.0,
-            memory_allocated: 4096,
-            memory_used: 2048,
-            memory_available: 2048,
-            token_usage: 0,
-            token_cost: 0.0,
-            active_agents: 0,
-            error_count: 0,
             timestamp: Utc::now(),
+            cpu_usage: 10.0,
+            memory_usage: 0.5,
+            active_agents: 0,
+            token_usage: TokenMetrics::default(),
         })
     }
     
@@ -303,15 +300,22 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let metrics = server.get_metrics().await.unwrap();
-        info!("Initial metrics - CPU: {:.1}%, Memory: {:?}", metrics.cpu_usage, metrics.memory_allocated);
+        info!("Initial metrics - CPU: {:.1}%, Memory: {:.1}%", 
+            metrics.cpu_usage * 100.0, 
+            metrics.memory_usage * 100.0
+        );
         assert!(metrics.cpu_usage >= 0.0);
 
         // Wait for health check to stabilize
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let health = server.check_health().await.unwrap();
-        info!("Health check result - Is healthy: {}, Message: {}", health.is_healthy, health.message);
-        assert!(health.is_healthy, "System should be healthy after initialization");
+        info!("Health check result - Overall: {}, CPU: {}, Memory: {}", 
+            health.overall_healthy,
+            health.cpu_healthy,
+            health.memory_healthy
+        );
+        assert!(health.overall_healthy, "System should be healthy after initialization");
 
         // Clean up
         server.stop().await.unwrap();

@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
+
 use tokio::net::{TcpListener, TcpStream};
 use crate::error::NexaError;
 use futures::{SinkExt, StreamExt};
@@ -9,10 +11,10 @@ pub fn hello_world() -> &'static str {
     "Hello from nexa-utils!"
 }
 
+/// Create a WebSocket server
 pub async fn create_ws_server(addr: &str) -> Result<TcpListener, NexaError> {
-    TcpListener::bind(addr)
-        .await
-        .map_err(|e| NexaError::System(e.to_string()))
+    let listener = TcpListener::bind(addr).await?;
+    Ok(listener)
 }
 
 pub async fn handle_ws_connection(stream: TcpStream) -> Result<(), NexaError> {
@@ -79,7 +81,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ws_server_creation() {
-        let server = create_ws_server("127.0.0.1:0").await;
-        assert!(server.is_ok());
+        let result = create_ws_server("127.0.0.1:0").await;
+        assert!(result.is_ok());
     }
 }

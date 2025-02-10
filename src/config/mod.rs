@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
+
 //! Configuration Management
 //! 
 //! Provides functionality for:
@@ -28,10 +30,10 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitoringConfig {
-    /// CPU usage threshold percentage
+    /// CPU usage threshold percentage (0-100)
     #[serde(default = "default_cpu_threshold")]
     pub cpu_threshold: f64,
-    /// Memory usage threshold percentage
+    /// Memory usage threshold percentage (0-100)
     #[serde(default = "default_memory_threshold")]
     pub memory_threshold: f64,
     /// Health check interval in seconds
@@ -118,7 +120,7 @@ fn default_connection_timeout() -> u64 { 30 }
 fn default_cpu_threshold() -> f64 { 80.0 }
 fn default_memory_threshold() -> f64 { 90.0 }
 fn default_health_check_interval() -> u64 { 30 }
-fn default_detailed_metrics() -> bool { false }
+fn default_detailed_metrics() -> bool { true }
 fn default_log_level() -> String { "info".to_string() }
 fn default_log_file() -> String { "nexa.log".to_string() }
 fn default_max_log_size() -> u64 { 100 }

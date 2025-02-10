@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
     time::{Duration, SystemTime},
     net::SocketAddr,
 };
@@ -22,8 +22,6 @@ use futures::{
 };
 use uuid::Uuid;
 use crate::error::NexaError;
-
-static SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerState {
@@ -51,7 +49,7 @@ impl ServerMetrics {
             failed_connections: 0,
             last_error: None,
             uptime: Duration::from_secs(0),
-            start_time: None,
+            start_time: Some(SystemTime::now()),
         }
     }
 

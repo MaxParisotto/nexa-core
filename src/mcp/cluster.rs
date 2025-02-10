@@ -1,6 +1,4 @@
 use std::time::Duration;
-use std::net::SocketAddr;
-use crate::error::NexaError;
 
 /// ClusterConfig holds the configuration parameters for the cluster.
 /// It includes heartbeat interval, election timeout, minimum quorum size, node timeout, replication factor, and a unique cluster identifier.
