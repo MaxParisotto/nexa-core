@@ -21,9 +21,10 @@ use crate::error::NexaError;
 use crate::llm::system_helper::TaskPriority;
 use crate::types::agent::{Agent, AgentStatus, AgentConfig, AgentMetrics};
 use crate::types::workflow::{WorkflowStatus, WorkflowStep, AgentWorkflow, AgentAction, RetryPolicy};
-use crate::server::Server;
+use crate::server::{Server, ServerState};
 use std::sync::Arc;
 use crate::llm;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct LLMModel {
@@ -157,6 +158,7 @@ pub enum Commands {
 #[derive(Debug)]
 pub struct CliHandler {
     pid_file: PathBuf,
+    state_file: PathBuf,
     server: Server,
     llm_client: Arc<llm::LLMClient>,
 }
@@ -164,17 +166,19 @@ pub struct CliHandler {
 impl CliHandler {
     pub fn new() -> Self {
         let pid_file = PathBuf::from("/tmp/nexa.pid");
+        let state_file = PathBuf::from("/tmp/nexa.state");
         let socket_path = PathBuf::from("/tmp/nexa.sock");
-        Self::with_paths(pid_file, socket_path)
+        Self::with_paths(pid_file, state_file, socket_path)
     }
 
-    pub fn with_paths(pid_file: PathBuf, socket_path: PathBuf) -> Self {
+    pub fn with_paths(pid_file: PathBuf, state_file: PathBuf, socket_path: PathBuf) -> Self {
         let server = Server::new(pid_file.clone(), socket_path);
         let llm_config = llm::LLMConfig::default();
         let llm_client = Arc::new(llm::LLMClient::new(llm_config).expect("Failed to initialize LLM client"));
         
         Self { 
-            pid_file, 
+            pid_file,
+            state_file,
             server,
             llm_client,
         }
@@ -193,25 +197,65 @@ impl CliHandler {
         false
     }
 
+    async fn save_server_state(&self, state: ServerState) -> Result<(), NexaError> {
+        let state_str = format!("{:?}", state);
+        fs::write(&self.state_file, state_str)
+            .map_err(|e| NexaError::Io(e.to_string()))
+    }
+
+    async fn load_server_state(&self) -> ServerState {
+        if let Ok(state_str) = fs::read_to_string(&self.state_file) {
+            if let Ok(state) = state_str.parse() {
+                return state;
+            }
+        }
+        ServerState::Stopped
+    }
+
     pub async fn start(&self, _port: Option<&str>) -> Result<(), NexaError> {
         if self.is_server_running() {
             return Err(NexaError::System("Server is already running".to_string()));
         }
 
-        // Start server in a separate tokio task
+        // Create necessary directories
+        if let Some(parent) = self.pid_file.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| NexaError::Io(format!("Failed to create directory: {}", e)))?;
+        }
+
+        // Create agents and workflows directories
+        std::fs::create_dir_all("/tmp/nexa/agents")
+            .map_err(|e| NexaError::Io(format!("Failed to create agents directory: {}", e)))?;
+        std::fs::create_dir_all("/tmp/nexa/workflows")
+            .map_err(|e| NexaError::Io(format!("Failed to create workflows directory: {}", e)))?;
+
+        // Start server
         let server = self.server.clone();
-        tokio::spawn(async move {
-            if let Err(e) = server.start().await {
-                error!("Server error: {}", e);
+        if let Err(e) = server.start().await {
+            error!("Server error: {}", e);
+            return Err(e);
+        }
+
+        // Wait for server to be in Running state with timeout
+        let start_time = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
+        
+        while start_time.elapsed() < timeout {
+            if server.get_state().await == ServerState::Running {
+                // Write PID file after server starts
+                fs::write(&self.pid_file, process::id().to_string())
+                    .map_err(|e| NexaError::Io(e.to_string()))?;
+
+                // Save server state
+                self.save_server_state(ServerState::Running).await?;
+
+                info!("Started Nexa Core server");
+                return Ok(());
             }
-        });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
 
-        // Write PID file after server starts
-        fs::write(&self.pid_file, process::id().to_string())
-            .map_err(|e| NexaError::Io(e.to_string()))?;
-
-        info!("Started Nexa Core server");
-        Ok(())
+        Err(NexaError::System("Server failed to start within timeout".to_string()))
     }
 
     pub async fn stop(&self) -> Result<(), NexaError> {
@@ -224,13 +268,27 @@ impl CliHandler {
             error!("Failed to stop server gracefully: {}", e);
         }
 
-        // Clean up PID file
-        if let Err(e) = fs::remove_file(&self.pid_file) {
-            error!("Failed to remove PID file: {}", e);
+        // Wait for server to be in Stopped state with timeout
+        let start_time = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
+        
+        while start_time.elapsed() < timeout {
+            if self.server.get_state().await == ServerState::Stopped {
+                // Clean up PID file
+                if let Err(e) = fs::remove_file(&self.pid_file) {
+                    error!("Failed to remove PID file: {}", e);
+                }
+                // Clean up state file
+                if let Err(e) = fs::remove_file(&self.state_file) {
+                    error!("Failed to remove state file: {}", e);
+                }
+                debug!("Stopped Nexa Core server");
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        debug!("Stopped Nexa Core server");
-        Ok(())
+        Err(NexaError::System("Server failed to stop within timeout".to_string()))
     }
 
     pub async fn status(&self) -> Result<(), NexaError> {
@@ -247,18 +305,36 @@ impl CliHandler {
             cpu_usage, memory_usage));
 
         let is_running = self.is_server_running();
-        status.push_str(&format!("Server Status: {} {}\n\n",
-            if is_running { "🟢" } else { "🔴" },
-            if is_running { "Running" } else { "Stopped" }
-        ));
+        let server_state = if is_running {
+            self.load_server_state().await
+        } else {
+            ServerState::Stopped
+        };
+        
+        let server_status = if is_running && server_state == ServerState::Running {
+            "🟢 Running"
+        } else if server_state == ServerState::Starting {
+            "🟡 Starting"
+        } else if server_state == ServerState::Stopping {
+            "🟡 Stopping"
+        } else {
+            "🔴 Stopped"
+        };
+        
+        status.push_str(&format!("Server Status: {}\n", server_status));
+        status.push_str(&format!("Server State: {:?}\n\n", server_state));
 
         if !is_running {
             status.push_str("Server is not running. Start it with 'nexa start'\n");
         } else {
-            let pid = fs::read_to_string(&self.pid_file)
-                .map_err(|e| NexaError::Io(e.to_string()))?;
-            status.push_str(&format!("Server is running on 0.0.0.0:8080\n"));
-            status.push_str(&format!("PID: {}\n", pid.trim()));
+            if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
+                status.push_str(&format!("Server is running on 0.0.0.0:8085\n"));
+                status.push_str(&format!("PID: {}\n", pid_str.trim()));
+                
+                // Add active connections if server is running
+                let active_conns = self.server.get_active_connections().await;
+                status.push_str(&format!("Active Connections: {}\n", active_conns));
+            }
         }
 
         println!("{}", status);

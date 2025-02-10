@@ -1,6 +1,6 @@
 use log::info;
 use once_cell::sync::OnceCell;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::AtomicU16;
 use nexa_core::cli::CliHandler;
 
 #[allow(dead_code)]
@@ -22,35 +22,23 @@ fn init_tracing() {
 async fn test_cli_handler() {
     init_tracing();
 
-    // Create temporary directories
     let temp_dir = tempfile::tempdir().unwrap();
-    let runtime_dir = temp_dir.path().to_path_buf();
-    let pid_file = runtime_dir.join("nexa-test.pid");
-    let socket_path = runtime_dir.join("nexa-test.sock");
+    let pid_file = temp_dir.path().join("nexa.pid");
+    let state_file = temp_dir.path().join("nexa.state");
+    let socket_path = temp_dir.path().join("nexa.sock");
 
-    // Get a unique port for this test
-    let port = PORT_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let addr = format!("127.0.0.1:{}", port);
-
-    // Create a new CLI handler
-    let cli = CliHandler::with_paths(pid_file, socket_path);
-
-    // Test server status when not running
-    info!("Testing server status when not running");
+    let cli = CliHandler::with_paths(pid_file, state_file, socket_path);
+    
+    // Test server start
     assert!(!cli.is_server_running());
-
-    // Start the server
-    info!("Starting server");
-    cli.start(Some(&addr)).await.expect("Failed to start server");
+    assert!(cli.start(None).await.is_ok());
     assert!(cli.is_server_running());
-
-    // Get server status
-    info!("Getting server status");
-    cli.status().await.expect("Failed to get server status");
-
-    // Stop the server
-    info!("Stopping server");
-    cli.stop().await.expect("Failed to stop server");
+    
+    // Test server status
+    assert!(cli.status().await.is_ok());
+    
+    // Test server stop
+    assert!(cli.stop().await.is_ok());
     assert!(!cli.is_server_running());
 
     info!("CLI handler test completed successfully");

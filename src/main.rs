@@ -1,12 +1,14 @@
 use clap::Parser;
 use log::{info, error};
 use std::process;
-use crate::cli::Cli;
-use crate::cli::Commands;
-use crate::cli::CliHandler;
-use crate::types::agent::AgentConfig;
-use crate::llm::system_helper::TaskPriority;
-use crate::types::workflow::{WorkflowStep, AgentAction, RetryPolicy};
+use tokio::time::Duration;
+use std::io::{stdout, Write};
+use crossterm::{
+    execute,
+    terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+    cursor::{Hide, Show},
+    style::{Color, Print, SetForegroundColor},
+};
 
 mod cli;
 mod types;
@@ -22,6 +24,34 @@ mod settings;
 mod utils;
 mod config;
 
+use crate::cli::{Cli, Commands, CliHandler};
+use crate::types::agent::AgentConfig;
+use crate::llm::system_helper::TaskPriority;
+use crate::types::workflow::{WorkflowStep, AgentAction, RetryPolicy};
+
+async fn display_stats_dashboard(_: &CliHandler) -> Result<(), Box<dyn std::error::Error>> {
+    execute!(stdout(), EnterAlternateScreen, Hide)?;
+
+    loop {
+        execute!(
+            stdout(),
+            Clear(ClearType::All),
+            SetForegroundColor(Color::Cyan),
+            Print("\n  NEXA Core System Monitor\n"),
+            SetForegroundColor(Color::White),
+            Print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"),
+            SetForegroundColor(Color::Green),
+            Print(format!("  System Time:   {}\n", chrono::Local::now().format("%H:%M:%S"))),
+            SetForegroundColor(Color::White),
+            Print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"),
+            Print("\n  Press Ctrl+C to exit\n"),
+        )?;
+
+        stdout().flush()?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize logging
@@ -31,9 +61,33 @@ async fn main() {
     let cli = Cli::parse();
     let handler = CliHandler::new();
 
-    // Process commands
+    // Setup Ctrl+C handler
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    ctrlc::set_handler(move || {
+        let _ = tx.blocking_send(());
+    }).expect("Error setting Ctrl-C handler");
+
     match cli.command {
-        Some(Commands::Start { port }) => {
+        Some(cmd) => {
+            process_command(&cmd, &handler).await;
+        }
+        None => {
+            // Show real-time dashboard
+            let dashboard = display_stats_dashboard(&handler);
+            tokio::select! {
+                _ = dashboard => {},
+                _ = rx.recv() => {
+                    // Cleanup and restore terminal
+                    execute!(stdout(), Show, LeaveAlternateScreen).unwrap_or(());
+                }
+            }
+        }
+    }
+}
+
+async fn process_command(command: &Commands, handler: &CliHandler) {
+    match command {
+        Commands::Start { port } => {
             info!("Starting server...");
             let port_str = port.map(|p| p.to_string());
             if let Err(e) = handler.start(port_str.as_deref()).await {
@@ -41,22 +95,22 @@ async fn main() {
                 process::exit(1);
             }
         }
-        Some(Commands::Stop) => {
+        Commands::Stop => {
             info!("Stopping server...");
             if let Err(e) = handler.stop().await {
                 error!("Failed to stop server: {}", e);
                 process::exit(1);
             }
         }
-        Some(Commands::Status) => {
+        Commands::Status => {
             info!("Checking server status...");
             if let Err(e) = handler.status().await {
                 error!("Failed to get server status: {}", e);
                 process::exit(1);
             }
         }
-        Some(Commands::Agents { status }) => {
-            let status_enum = status.map(|s| s.parse().unwrap_or_default());
+        Commands::Agents { status } => {
+            let status_enum = status.as_ref().and_then(|s| s.parse().ok());
             match handler.list_agents(status_enum).await {
                 Ok(agents) => {
                     println!("\nAgents:");
@@ -75,16 +129,16 @@ async fn main() {
                 }
             }
         }
-        Some(Commands::CreateAgent { name, model, provider }) => {
+        Commands::CreateAgent { name, model, provider } => {
             let mut config = AgentConfig::default();
-            if let Some(m) = model {
-                config.llm_model = m;
+            if let Some(m) = model.as_ref() {
+                config.llm_model = m.to_string();
             }
-            if let Some(p) = provider {
-                config.llm_provider = p;
+            if let Some(p) = provider.as_ref() {
+                config.llm_provider = p.to_string();
             }
             
-            match handler.create_agent(name, config).await {
+            match handler.create_agent(name.to_string(), config).await {
                 Ok(agent) => println!("Created agent: {}", agent.id),
                 Err(e) => {
                     error!("Failed to create agent: {}", e);
@@ -92,13 +146,13 @@ async fn main() {
                 }
             }
         }
-        Some(Commands::StopAgent { id }) => {
+        Commands::StopAgent { id } => {
             if let Err(e) = handler.stop_agent(&id).await {
                 error!("Failed to stop agent: {}", e);
                 process::exit(1);
             }
         }
-        Some(Commands::Models { provider }) => {
+        Commands::Models { provider } => {
             match handler.list_models(&provider).await {
                 Ok(models) => {
                     println!("\nAvailable Models:");
@@ -118,19 +172,19 @@ async fn main() {
                 }
             }
         }
-        Some(Commands::AddServer { provider, url }) => {
+        Commands::AddServer { provider, url } => {
             if let Err(e) = handler.add_llm_server(&provider, &url).await {
                 error!("Failed to add server: {}", e);
                 process::exit(1);
             }
         }
-        Some(Commands::RemoveServer { provider }) => {
+        Commands::RemoveServer { provider } => {
             if let Err(e) = handler.remove_llm_server(&provider).await {
                 error!("Failed to remove server: {}", e);
                 process::exit(1);
             }
         }
-        Some(Commands::CreateTask { description, priority, agent_id }) => {
+        Commands::CreateTask { description, priority, agent_id } => {
             let priority = match priority.to_lowercase().as_str() {
                 "low" => TaskPriority::Low,
                 "medium" => TaskPriority::Medium,
@@ -139,16 +193,15 @@ async fn main() {
                 _ => TaskPriority::Medium,
             };
             
-            if let Err(e) = handler.create_task(description, priority, agent_id).await {
+            if let Err(e) = handler.create_task(description.clone(), priority, agent_id.clone()).await {
                 error!("Failed to create task: {}", e);
                 process::exit(1);
             }
         }
-        Some(Commands::Tasks) => {
-            // Implement task listing
+        Commands::Tasks => {
             println!("Task listing not implemented yet");
         }
-        Some(Commands::Workflows) => {
+        Commands::Workflows => {
             match handler.list_workflows().await {
                 Ok(workflows) => {
                     println!("\nWorkflows:");
@@ -166,10 +219,10 @@ async fn main() {
                 }
             }
         }
-        Some(Commands::CreateWorkflow { name, steps }) => {
+        Commands::CreateWorkflow { name, steps } => {
             let workflow_steps = steps.iter()
                 .map(|step| WorkflowStep {
-                    agent_id: "default".to_string(), // This should be configurable
+                    agent_id: "default".to_string(),
                     action: AgentAction::ProcessText {
                         input: step.clone(),
                         max_tokens: 1000,
@@ -180,7 +233,7 @@ async fn main() {
                 })
                 .collect();
 
-            match handler.create_workflow(name, workflow_steps).await {
+            match handler.create_workflow(name.clone(), workflow_steps).await {
                 Ok(workflow) => {
                     println!("Created workflow:");
                     println!("ID: {}", workflow.id);
@@ -193,15 +246,11 @@ async fn main() {
                 }
             }
         }
-        Some(Commands::ExecuteWorkflow { id }) => {
+        Commands::ExecuteWorkflow { id } => {
             if let Err(e) = handler.execute_workflow(&id).await {
                 error!("Failed to execute workflow: {}", e);
                 process::exit(1);
             }
-        }
-        None => {
-            println!("No command specified. Use --help for usage information.");
-            process::exit(1);
         }
     }
 } 

@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime},
     net::SocketAddr,
+    str::FromStr,
 };
 use tokio::{
     sync::RwLock,
@@ -29,6 +30,20 @@ pub enum ServerState {
     Running,
     Stopping,
     Stopped,
+}
+
+impl FromStr for ServerState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Starting" => Ok(ServerState::Starting),
+            "Running" => Ok(ServerState::Running),
+            "Stopping" => Ok(ServerState::Stopping),
+            "Stopped" => Ok(ServerState::Stopped),
+            _ => Err(format!("Invalid server state: {}", s)),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -168,7 +183,7 @@ impl Server {
         *state = ServerState::Stopping;
         drop(state);
 
-        // Clear listener
+        // Clear listener to stop accepting new connections
         *self.listener.write().await = None;
 
         // Reset metrics
@@ -182,6 +197,16 @@ impl Server {
         // Clear connected clients
         self.connected_clients.write().await.clear();
         *self.active_connections.write().await = 0;
+
+        // Wait for all active connections to close
+        let timeout = Duration::from_secs(5);
+        let start = SystemTime::now();
+        while self.get_active_connections().await > 0 {
+            if SystemTime::now().duration_since(start).unwrap() > timeout {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
 
         // Update state to stopped
         let mut state = self.state.write().await;
