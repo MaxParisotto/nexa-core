@@ -1,5 +1,5 @@
 use clap::Parser;
-use log::{info, error, debug};
+use log::{info, error};
 use std::process;
 use tokio::time::Duration;
 use std::io::{stdout, Write};
@@ -14,7 +14,6 @@ use daemonize::Daemonize;
 use std::fs::File;
 use std::path::PathBuf;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::AsRawFd;
 use crate::server::ServerState;
 
 mod cli;
@@ -127,7 +126,6 @@ async fn process_command(command: &Commands, handler: &CliHandler) {
                 .privileged_action(|| {
                     unsafe { libc::setsid() };
                     println!("Starting Nexa server daemon...");
-                    Ok(())
                 });
             
             match daemonize.start() {

@@ -70,14 +70,6 @@ impl ServerMetrics {
         }
     }
 
-    pub fn update_uptime(&mut self) {
-        if let Some(start) = self.start_time {
-            if let Ok(duration) = SystemTime::now().duration_since(start) {
-                self.uptime = duration;
-            }
-        }
-    }
-
     pub fn reset(&mut self) {
         self.total_connections = 0;
         self.active_connections = 0;
@@ -274,6 +266,7 @@ impl Server {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn get_state(&self) -> ServerState {
         self.state.read().await.clone()
     }
