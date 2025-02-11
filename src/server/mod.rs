@@ -130,12 +130,22 @@ impl Server {
         *state = ServerState::Starting;
         drop(state);
 
-        // Reset metrics
-        let mut metrics = self.metrics.write().await;
-        *metrics = ServerMetrics::new();
-        metrics.start_time = Some(SystemTime::now());
-        metrics.update_uptime();
-        drop(metrics);
+        // Reset metrics and connections
+        {
+            let mut metrics = self.metrics.write().await;
+            *metrics = ServerMetrics::new();
+            metrics.start_time = Some(SystemTime::now());
+            metrics.update_uptime();
+        }
+        {
+            let mut clients = self.clients.write().await;
+            clients.clear();
+        }
+        {
+            let mut connected = self.connected_clients.write().await;
+            connected.clear();
+        }
+        *self.active_connections.write().await = 0;
 
         // Start TCP listener
         let addr = format!("0.0.0.0:{}", self.port);
@@ -221,7 +231,8 @@ impl Server {
     }
 
     pub async fn get_active_connections(&self) -> usize {
-        self.clients.read().await.len()
+        let clients = self.connected_clients.read().await;
+        clients.len()
     }
 
     #[allow(dead_code)]
@@ -261,6 +272,7 @@ impl Server {
         
         let (write_half, read_half) = ws_stream.split();
         
+        // Update metrics and connection tracking
         {
             let mut metrics = self.metrics.write().await;
             metrics.total_connections += 1;
@@ -271,17 +283,22 @@ impl Server {
                 metrics.failed_connections
             );
         }
-        *self.active_connections.write().await += 1;
-        self.connected_clients.write().await.insert(addr, SystemTime::now());
+        {
+            let client_id = Uuid::new_v4();
+            self.clients.write().await.insert(client_id, SystemTime::now());
+            self.connected_clients.write().await.insert(addr, SystemTime::now());
+            *self.active_connections.write().await += 1;
+        }
 
         debug!("Processing WebSocket connection from {}", addr);
         self.process_ws_connection(read_half, write_half, addr).await?;
 
-        self.connected_clients.write().await.remove(&addr);
-        *self.active_connections.write().await -= 1;
+        // Cleanup connection
         {
+            self.connected_clients.write().await.remove(&addr);
+            *self.active_connections.write().await = self.active_connections.write().await.saturating_sub(1);
             let mut metrics = self.metrics.write().await;
-            metrics.active_connections -= 1;
+            metrics.active_connections = metrics.active_connections.saturating_sub(1);
             debug!("Connection closed - Active: {}", metrics.active_connections);
         }
 

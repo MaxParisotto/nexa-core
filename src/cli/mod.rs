@@ -191,7 +191,14 @@ impl CliHandler {
     pub fn is_server_running(&self) -> bool {
         if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                return unsafe { libc::kill(pid, 0) == 0 };
+                if unsafe { libc::kill(pid, 0) == 0 } {
+                    // Also check if state file exists and indicates running
+                    if let Ok(state_str) = fs::read_to_string(&self.state_file) {
+                        if let Ok(state) = state_str.parse::<ServerState>() {
+                            return state == ServerState::Running;
+                        }
+                    }
+                }
             }
         }
         false
@@ -199,6 +206,11 @@ impl CliHandler {
 
     async fn save_server_state(&self, state: ServerState) -> Result<(), NexaError> {
         let state_str = format!("{:?}", state);
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = self.state_file.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| NexaError::Io(format!("Failed to create state directory: {}", e)))?;
+        }
         fs::write(&self.state_file, state_str)
             .map_err(|e| NexaError::Io(e.to_string()))
     }
