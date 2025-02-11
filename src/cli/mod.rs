@@ -26,8 +26,10 @@ use std::sync::Arc;
 use crate::llm;
 use std::time::Duration;
 use sysinfo::System;
+use serde::{Serialize, Deserialize};
+use utoipa::ToSchema;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct LLMModel {
     pub name: String,
     pub provider: String,

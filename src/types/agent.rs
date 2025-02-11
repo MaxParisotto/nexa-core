@@ -4,9 +4,10 @@ use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use std::fmt;
 use std::str::FromStr;
+use utoipa::ToSchema;
 
 /// AgentStatus represents the current state of an agent (Idle, Active, Busy, Offline).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub enum AgentStatus {
     /// Agent is idle and available for tasks
     Idle,
@@ -50,7 +51,7 @@ impl fmt::Display for AgentStatus {
 }
 
 /// TaskStatus represents the current status of a task (Pending, InProgress, Completed, Failed).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum TaskStatus {
     /// Task is waiting to be started
     Pending,
@@ -63,7 +64,7 @@ pub enum TaskStatus {
 }
 
 /// Agent encapsulates the properties of an agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Agent {
     /// Unique identifier for the agent
     pub id: String,
@@ -76,12 +77,14 @@ pub struct Agent {
     /// ID of the current task being executed, if any
     pub current_task: Option<String>,
     /// Timestamp of the last heartbeat received
+    #[schema(value_type = String)]
     pub last_heartbeat: DateTime<Utc>,
     /// ID of the parent agent, if any
     pub parent_id: Option<String>,
     /// IDs of child agents, if any
     pub children: Vec<String>,
     /// Timestamp of the last active time
+    #[schema(value_type = String)]
     pub last_active: DateTime<Utc>,
     /// Configuration of the agent
     pub config: AgentConfig,
@@ -120,7 +123,7 @@ impl Agent {
 }
 
 /// Task represents an assigned task with a description, priority, and associated agent id.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Task {
     /// Unique identifier for the task
     pub id: String,
@@ -173,7 +176,7 @@ impl Task {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AgentConfig {
     pub llm_model: String,
     pub llm_provider: String,
@@ -188,7 +191,7 @@ impl Default for AgentConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AgentMetrics {
     pub tasks_completed: u64,
     pub tasks_failed: u64,

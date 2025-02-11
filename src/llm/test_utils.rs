@@ -1,5 +1,6 @@
 use tokio::net::TcpListener;
-use hyper::{Body, Request, Response, Server};
+use hyper::body::Body;
+use hyper::{Request, Response, Server};
 use hyper::service::{make_service_fn, service_fn};
 use serde_json::json;
 use std::convert::Infallible;
@@ -14,8 +15,14 @@ pub async fn start_mock_server() -> SocketAddr {
         Ok::<_, Infallible>(service_fn(mock_llm_handler))
     });
 
-    let server = Server::from_tcp(listener.into_std().unwrap()).unwrap();
-    tokio::spawn(server.serve(make_svc));
+    let server = Server::builder(hyper::server::accept::from_stream(tokio_stream::wrappers::TcpListenerStream::new(listener)))
+        .serve(make_svc);
+
+    tokio::spawn(async move {
+        if let Err(e) = server.await {
+            eprintln!("Server error: {}", e);
+        }
+    });
 
     addr
 }
@@ -31,7 +38,7 @@ async fn mock_llm_handler(req: Request<Body>) -> Result<Response<Body>, Infallib
                 "choices": [{
                     "message": {
                         "role": "assistant",
-                        "content": "This is a mock response from the test server."
+                        "content": "fn add(a: i32, b: i32) -> i32 { a + b }"
                     },
                     "finish_reason": "stop",
                     "index": 0
