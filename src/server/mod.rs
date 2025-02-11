@@ -5,6 +5,7 @@ use std::{
     time::{Duration, SystemTime},
     net::SocketAddr,
     str::FromStr,
+    fs,
 };
 use tokio::{
     sync::RwLock,
@@ -23,8 +24,9 @@ use futures::{
 };
 use uuid::Uuid;
 use crate::error::NexaError;
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ServerState {
     Starting,
     Running,
@@ -75,6 +77,15 @@ impl ServerMetrics {
             }
         }
     }
+
+    pub fn reset(&mut self) {
+        self.total_connections = 0;
+        self.active_connections = 0;
+        self.failed_connections = 0;
+        self.last_error = None;
+        self.uptime = Duration::from_secs(0);
+        self.start_time = None;
+    }
 }
 
 impl Default for ServerMetrics {
@@ -101,14 +112,30 @@ pub struct Server {
     connected_clients: Arc<RwLock<HashMap<SocketAddr, SystemTime>>>,
     metrics: Arc<RwLock<ServerMetrics>>,
     listener: Arc<RwLock<Option<TcpListener>>>,
+    runtime_dir: PathBuf,
 }
 
 impl Server {
-    pub fn new(_pid_file: PathBuf, _socket_path: PathBuf) -> Self {
+    pub fn new(pid_file: PathBuf, socket_path: PathBuf) -> Self {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let runtime_dir = PathBuf::from(&home).join(".nexa");
+        
+        // Ensure runtime directory exists
+        fs::create_dir_all(&runtime_dir).expect("Failed to create runtime directory");
+        
+        // Write PID file
+        let pid = std::process::id();
+        let _ = fs::write(&pid_file, pid.to_string());
+        
+        // Create Unix domain socket if on Unix
+        #[cfg(unix)]
+        if let Some(parent) = socket_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        
         let mut initial_metrics = ServerMetrics::new();
         initial_metrics.start_time = Some(SystemTime::now());
-        initial_metrics.update_uptime();
-
+        
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             port: 8085,
@@ -119,23 +146,32 @@ impl Server {
             connected_clients: Arc::new(RwLock::new(HashMap::new())),
             metrics: Arc::new(RwLock::new(initial_metrics)),
             listener: Arc::new(RwLock::new(None)),
+            runtime_dir,
         }
     }
 
-    pub async fn start(&self) -> Result<(), NexaError> {
-        let mut state = self.state.write().await;
-        if *state == ServerState::Running {
-            return Err(NexaError::Server("Server is already running".to_string()));
-        }
-        *state = ServerState::Starting;
-        drop(state);
+    async fn save_state(&self, state: ServerState) -> Result<(), Box<dyn std::error::Error>> {
+        let state_file = self.runtime_dir.join("nexa.state");
+        let state_str = match state {
+            ServerState::Starting => "Starting",
+            ServerState::Running => "Running",
+            ServerState::Stopping => "Stopping",
+            ServerState::Stopped => "Stopped",
+        };
+        fs::write(state_file, state_str)?;
+        Ok(())
+    }
 
-        // Reset metrics and connections
+    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut state = self.state.write().await;
+        *state = ServerState::Starting;
+        self.save_state(ServerState::Starting).await?;
+        
+        // Reset all state in a synchronized way
         {
             let mut metrics = self.metrics.write().await;
             *metrics = ServerMetrics::new();
             metrics.start_time = Some(SystemTime::now());
-            metrics.update_uptime();
         }
         {
             let mut clients = self.clients.write().await;
@@ -146,37 +182,66 @@ impl Server {
             connected.clear();
         }
         *self.active_connections.write().await = 0;
-
+        
         // Start TCP listener
         let addr = format!("0.0.0.0:{}", self.port);
-        let listener = TcpListener::bind(&addr).await?;
-        let bound_addr = listener.local_addr()?;
+        let listener = match TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                *state = ServerState::Stopped;
+                self.save_state(ServerState::Stopped).await?;
+                return Err(NexaError::Server(format!("Failed to bind to address: {}", e)).into());
+            }
+        };
+        
+        let bound_addr = match listener.local_addr() {
+            Ok(addr) => addr,
+            Err(e) => {
+                *state = ServerState::Stopped;
+                self.save_state(ServerState::Stopped).await?;
+                return Err(NexaError::Server(format!("Failed to get local address: {}", e)).into());
+            }
+        };
+        
         *self.bound_addr.write().await = Some(bound_addr);
         *self.listener.write().await = Some(listener);
         
         info!("WebSocket server listening on: {}", bound_addr);
-
-        // Update state to running
-        let mut state = self.state.write().await;
+        
         *state = ServerState::Running;
+        self.save_state(ServerState::Running).await?;
         drop(state);
-
+        
         // Start server loop in a separate task
         let server = self.clone();
         tokio::spawn(async move {
             if let Some(listener) = &*server.listener.read().await {
-                while *server.state.read().await == ServerState::Running {
-                    if let Ok((stream, addr)) = listener.accept().await {
-                        info!("New connection from: {}", addr);
-                        let server = server.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = server.handle_connection(stream, addr).await {
-                                error!("Error handling connection: {}", e);
-                                let mut metrics = server.metrics.write().await;
-                                metrics.failed_connections += 1;
-                                metrics.last_error = Some(e.to_string());
-                            }
-                        });
+                loop {
+                    let state = server.state.read().await;
+                    if *state != ServerState::Running {
+                        break;
+                    }
+                    drop(state);
+                    
+                    match listener.accept().await {
+                        Ok((stream, addr)) => {
+                            info!("New connection from: {}", addr);
+                            let server = server.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = server.handle_connection(stream, addr).await {
+                                    error!("Error handling connection: {}", e);
+                                    let mut metrics = server.metrics.write().await;
+                                    metrics.failed_connections += 1;
+                                    metrics.last_error = Some(e.to_string());
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            error!("Failed to accept connection: {}", e);
+                            let mut metrics = server.metrics.write().await;
+                            metrics.failed_connections += 1;
+                            metrics.last_error = Some(e.to_string());
+                        }
                     }
                 }
             }
@@ -185,47 +250,30 @@ impl Server {
         Ok(())
     }
 
-    pub async fn stop(&self) -> Result<(), NexaError> {
+    pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut state = self.state.write().await;
-        if *state == ServerState::Stopped {
-            return Err(NexaError::Server("Server is not running".to_string()));
-        }
         *state = ServerState::Stopping;
-        drop(state);
-
+        self.save_state(ServerState::Stopping).await?;
+        
         // Clear listener to stop accepting new connections
-        *self.listener.write().await = None;
-
+        if let Some(listener) = self.listener.write().await.take() {
+            drop(listener);
+        }
+        
         // Reset metrics
         let mut metrics = self.metrics.write().await;
-        *metrics = ServerMetrics::default();
+        metrics.reset();
         drop(metrics);
-
-        // Clear bound address
-        *self.bound_addr.write().await = None;
-
-        // Clear connected clients
-        self.connected_clients.write().await.clear();
-        *self.active_connections.write().await = 0;
-
-        // Wait for all active connections to close
-        let timeout = Duration::from_secs(5);
-        let start = SystemTime::now();
-        while self.get_active_connections().await > 0 {
-            if SystemTime::now().duration_since(start).unwrap() > timeout {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        // Update state to stopped
-        let mut state = self.state.write().await;
-        *state = ServerState::Stopped;
         
+        *state = ServerState::Stopped;
+        self.save_state(ServerState::Stopped).await?;
+        
+        // Clean up files
+        let _ = fs::remove_file(self.runtime_dir.join("nexa.state"));
+        let _ = fs::remove_file(self.runtime_dir.join("nexa.pid"));
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn get_state(&self) -> ServerState {
         self.state.read().await.clone()
     }

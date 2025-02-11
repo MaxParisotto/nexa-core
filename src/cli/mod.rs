@@ -25,6 +25,7 @@ use crate::server::{Server, ServerState};
 use std::sync::Arc;
 use crate::llm;
 use std::time::Duration;
+use sysinfo::System;
 
 #[derive(Debug, Clone)]
 pub struct LLMModel {
@@ -155,7 +156,7 @@ pub enum Commands {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CliHandler {
     pid_file: PathBuf,
     state_file: PathBuf,
@@ -165,13 +166,22 @@ pub struct CliHandler {
 
 impl CliHandler {
     pub fn new() -> Self {
-        let pid_file = PathBuf::from("/tmp/nexa.pid");
-        let state_file = PathBuf::from("/tmp/nexa.state");
-        let socket_path = PathBuf::from("/tmp/nexa.sock");
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let runtime_dir = PathBuf::from(home).join(".nexa");
+        let pid_file = runtime_dir.join("nexa.pid");
+        let state_file = runtime_dir.join("nexa.state");
+        let socket_path = runtime_dir.join("nexa.sock");
         Self::with_paths(pid_file, state_file, socket_path)
     }
 
     pub fn with_paths(pid_file: PathBuf, state_file: PathBuf, socket_path: PathBuf) -> Self {
+        // Create runtime directory if it doesn't exist
+        if let Some(parent) = pid_file.parent() {
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                error!("Failed to create runtime directory: {}", e);
+            });
+        }
+        
         let server = Server::new(pid_file.clone(), socket_path);
         let llm_config = llm::LLMConfig::default();
         let llm_client = Arc::new(llm::LLMClient::new(llm_config).expect("Failed to initialize LLM client"));
@@ -188,168 +198,157 @@ impl CliHandler {
         &self.server
     }
 
+    pub fn get_pid_file(&self) -> &PathBuf {
+        &self.pid_file
+    }
+
     pub fn is_server_running(&self) -> bool {
+        // First check PID file
         if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                // Check if process exists
                 if unsafe { libc::kill(pid, 0) == 0 } {
-                    // Also check if state file exists and indicates running
+                    // Process exists, check state file
                     if let Ok(state_str) = fs::read_to_string(&self.state_file) {
-                        if let Ok(state) = state_str.parse::<ServerState>() {
-                            return state == ServerState::Running;
-                        }
+                        let state = state_str.trim();
+                        return state == "Running" || state == "Starting";
                     }
                 }
             }
         }
+        
+        // Clean up stale files
+        let _ = fs::remove_file(&self.pid_file);
+        let _ = fs::remove_file(&self.state_file);
         false
     }
 
-    async fn save_server_state(&self, state: ServerState) -> Result<(), NexaError> {
-        let state_str = format!("{:?}", state);
-        // Create parent directory if it doesn't exist
+    pub async fn save_server_state(&self, state: ServerState) -> Result<(), NexaError> {
+        // Create parent directory if needed
         if let Some(parent) = self.state_file.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| NexaError::Io(format!("Failed to create state directory: {}", e)))?;
         }
-        fs::write(&self.state_file, state_str)
-            .map_err(|e| NexaError::Io(e.to_string()))
+        
+        // Write state file
+        fs::write(&self.state_file, match state {
+            ServerState::Running => "Running",
+            ServerState::Starting => "Starting",
+            ServerState::Stopping => "Stopping",
+            ServerState::Stopped => "Stopped",
+        }).map_err(|e| NexaError::Io(e.to_string()))?;
+
+        // Handle PID file based on state
+        match state {
+            ServerState::Running => {
+                fs::write(&self.pid_file, process::id().to_string())
+                    .map_err(|e| NexaError::Io(e.to_string()))?;
+            }
+            ServerState::Stopped => {
+                let _ = fs::remove_file(&self.pid_file);
+                let _ = fs::remove_file(&self.state_file);
+            }
+            _ => {}
+        }
+        
+        Ok(())
     }
 
     async fn load_server_state(&self) -> ServerState {
         if let Ok(state_str) = fs::read_to_string(&self.state_file) {
-            if let Ok(state) = state_str.parse() {
-                return state;
+            match state_str.trim() {
+                "Running" => ServerState::Running,
+                "Starting" => ServerState::Starting,
+                "Stopping" => ServerState::Stopping,
+                _ => ServerState::Stopped,
             }
-        }
-        ServerState::Stopped
-    }
-
-    pub async fn start(&self, _port: Option<&str>) -> Result<(), NexaError> {
-        if self.is_server_running() {
-            return Err(NexaError::System("Server is already running".to_string()));
-        }
-
-        // Create necessary directories
-        if let Some(parent) = self.pid_file.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| NexaError::Io(format!("Failed to create directory: {}", e)))?;
-        }
-
-        // Create agents and workflows directories
-        std::fs::create_dir_all("/tmp/nexa/agents")
-            .map_err(|e| NexaError::Io(format!("Failed to create agents directory: {}", e)))?;
-        std::fs::create_dir_all("/tmp/nexa/workflows")
-            .map_err(|e| NexaError::Io(format!("Failed to create workflows directory: {}", e)))?;
-
-        // Start server
-        let server = self.server.clone();
-        if let Err(e) = server.start().await {
-            error!("Server error: {}", e);
-            return Err(e);
-        }
-
-        // Wait for server to be in Running state with timeout
-        let start_time = std::time::Instant::now();
-        let timeout = Duration::from_secs(5);
-        
-        while start_time.elapsed() < timeout {
-            if server.get_state().await == ServerState::Running {
-                // Write PID file after server starts
-                fs::write(&self.pid_file, process::id().to_string())
-                    .map_err(|e| NexaError::Io(e.to_string()))?;
-
-                // Save server state
-                self.save_server_state(ServerState::Running).await?;
-
-                info!("Started Nexa Core server");
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        Err(NexaError::System("Server failed to start within timeout".to_string()))
-    }
-
-    pub async fn stop(&self) -> Result<(), NexaError> {
-        if !self.is_server_running() {
-            return Err(NexaError::System("Server is not running".to_string()));
-        }
-
-        // Stop the server gracefully
-        if let Err(e) = self.server.stop().await {
-            error!("Failed to stop server gracefully: {}", e);
-        }
-
-        // Wait for server to be in Stopped state with timeout
-        let start_time = std::time::Instant::now();
-        let timeout = Duration::from_secs(5);
-        
-        while start_time.elapsed() < timeout {
-            if self.server.get_state().await == ServerState::Stopped {
-                // Clean up PID file
-                if let Err(e) = fs::remove_file(&self.pid_file) {
-                    error!("Failed to remove PID file: {}", e);
-                }
-                // Clean up state file
-                if let Err(e) = fs::remove_file(&self.state_file) {
-                    error!("Failed to remove state file: {}", e);
-                }
-                debug!("Stopped Nexa Core server");
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        Err(NexaError::System("Server failed to stop within timeout".to_string()))
-    }
-
-    pub async fn status(&self) -> Result<(), NexaError> {
-        info!("Checking Nexa Core server status");
-        
-        let mut status = String::from("\nSystem Status:\n\n");
-
-        let mut sys_info = sysinfo::System::new_all();
-        sys_info.refresh_all();
-        let cpu_usage = sys_info.global_cpu_info().cpu_usage();
-        let memory_usage = sys_info.used_memory() as f32 / sys_info.total_memory() as f32 * 100.0;
-        
-        status.push_str(&format!("Resource Usage:\n  CPU: {:.1}%\n  Memory: {:.1}%\n\n", 
-            cpu_usage, memory_usage));
-
-        let is_running = self.is_server_running();
-        let server_state = if is_running {
-            self.load_server_state().await
         } else {
             ServerState::Stopped
-        };
-        
-        let server_status = if is_running && server_state == ServerState::Running {
-            "🟢 Running"
-        } else if server_state == ServerState::Starting {
-            "🟡 Starting"
-        } else if server_state == ServerState::Stopping {
-            "🟡 Stopping"
-        } else {
-            "🔴 Stopped"
-        };
-        
-        status.push_str(&format!("Server Status: {}\n", server_status));
-        status.push_str(&format!("Server State: {:?}\n\n", server_state));
+        }
+    }
 
-        if !is_running {
-            status.push_str("Server is not running. Start it with 'nexa start'\n");
-        } else {
-            if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
-                status.push_str(&format!("Server is running on 0.0.0.0:8085\n"));
-                status.push_str(&format!("PID: {}\n", pid_str.trim()));
-                
-                // Add active connections if server is running
-                let active_conns = self.server.get_active_connections().await;
-                status.push_str(&format!("Active Connections: {}\n", active_conns));
+    pub async fn start(&self, port: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let runtime_dir = PathBuf::from(&home).join(".nexa");
+        
+        // Create runtime directory if needed
+        fs::create_dir_all(&runtime_dir)?;
+        
+        // Check if server is already running
+        if let Ok(state_str) = fs::read_to_string(runtime_dir.join("nexa.state")) {
+            if state_str.trim() == "Running" {
+                return Err("Server is already running".into());
             }
         }
-
-        println!("{}", status);
+        
+        // Start server
+        let server = Server::new(
+            runtime_dir.join("nexa.pid"),
+            runtime_dir.join("nexa.sock")
+        );
+        
+        server.start().await?;
+        
+        // Write initial state
+        fs::write(runtime_dir.join("nexa.state"), "Running")?;
+        
+        Ok(())
+    }
+    
+    pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let runtime_dir = PathBuf::from(&home).join(".nexa");
+        
+        // Check if server is running
+        if let Ok(state_str) = fs::read_to_string(runtime_dir.join("nexa.state")) {
+            if state_str.trim() != "Running" {
+                return Err("Server is not running".into());
+            }
+        } else {
+            return Err("Server is not running".into());
+        }
+        
+        // Stop server
+        let server = Server::new(
+            runtime_dir.join("nexa.pid"),
+            runtime_dir.join("nexa.sock")
+        );
+        
+        server.stop().await?;
+        
+        // Clean up state file
+        let _ = fs::remove_file(runtime_dir.join("nexa.state"));
+        let _ = fs::remove_file(runtime_dir.join("nexa.pid"));
+        
+        Ok(())
+    }
+    
+    pub async fn status(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let runtime_dir = PathBuf::from(&home).join(".nexa");
+        
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        
+        let state = if let Ok(state_str) = fs::read_to_string(runtime_dir.join("nexa.state")) {
+            state_str.trim().to_string()
+        } else {
+            "Stopped".to_string()
+        };
+        
+        println!("\nServer Status: {} {}", 
+            if state == "Running" { "🟢" } else { "🔴" },
+            if state == "Running" { "Running" } else { "Stopped" }
+        );
+        println!("Server State: {:?}", state);
+        println!("Resource Usage:");
+        println!("  CPU: {:.1}%", sys.global_cpu_info().cpu_usage());
+        println!("  Memory: {:.1}%", sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0);
+        
+        if state != "Running" {
+            println!("\nTo start the server, run: nexa start");
+        }
+        
         Ok(())
     }
 
