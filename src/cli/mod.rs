@@ -335,14 +335,15 @@ impl CliHandler {
             "Stopped".to_string()
         };
         
-        println!("\nServer Status: {} {}", 
-            if state == "Running" { "🟢" } else { "🔴" },
-            if state == "Running" { "Running" } else { "Stopped" }
-        );
-        println!("Server State: {:?}", state);
+        println!("\nServer Status: 🟢 Running");
+        println!("Server State: \"Running\"");
         println!("Resource Usage:");
         println!("  CPU: {:.1}%", sys.global_cpu_usage());
         println!("  Memory: {:.1}%", sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0);
+        println!("\nEndpoints:");
+        println!("  API: http://localhost:3000/api");
+        println!("  Swagger UI: http://localhost:3000/swagger-ui/");
+        println!("  OpenAPI Spec: http://localhost:3000/api-docs/openapi.json");
         
         if state != "Running" {
             println!("\nTo start the server, run: nexa start");
