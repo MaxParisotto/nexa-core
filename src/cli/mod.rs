@@ -160,6 +160,7 @@ pub enum Commands {
 pub struct CliHandler {
     pid_file: PathBuf,
     state_file: PathBuf,
+    socket_path: PathBuf,
     server: Server,
     llm_client: Arc<llm::LLMClient>,
 }
@@ -175,20 +176,12 @@ impl CliHandler {
     }
 
     pub fn with_paths(pid_file: PathBuf, state_file: PathBuf, socket_path: PathBuf) -> Self {
-        // Create runtime directory if it doesn't exist
-        if let Some(parent) = pid_file.parent() {
-            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-                error!("Failed to create runtime directory: {}", e);
-            });
-        }
-        
-        let server = Server::new(pid_file.clone(), socket_path);
-        let llm_config = llm::LLMConfig::default();
-        let llm_client = Arc::new(llm::LLMClient::new(llm_config).expect("Failed to initialize LLM client"));
-        
-        Self { 
+        let server = Server::new(pid_file.clone(), socket_path.clone());
+        let llm_client = Arc::new(llm::LLMClient::new(llm::LLMConfig::default()).unwrap());
+        Self {
             pid_file,
             state_file,
+            socket_path,
             server,
             llm_client,
         }
@@ -268,14 +261,13 @@ impl CliHandler {
     }
 
     pub async fn start(&self, port: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let runtime_dir = PathBuf::from(&home).join(".nexa");
-        
         // Create runtime directory if needed
-        fs::create_dir_all(&runtime_dir)?;
+        if let Some(parent) = self.state_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
         
         // Check if server is already running
-        if let Ok(state_str) = fs::read_to_string(runtime_dir.join("nexa.state")) {
+        if let Ok(state_str) = fs::read_to_string(&self.state_file) {
             if state_str.trim() == "Running" {
                 return Err("Server is already running".into());
             }
@@ -283,24 +275,21 @@ impl CliHandler {
         
         // Start server
         let server = Server::new(
-            runtime_dir.join("nexa.pid"),
-            runtime_dir.join("nexa.sock")
+            self.pid_file.clone(),
+            self.socket_path.clone()
         );
         
         server.start().await?;
         
         // Write initial state
-        fs::write(runtime_dir.join("nexa.state"), "Running")?;
+        fs::write(&self.state_file, "Running")?;
         
         Ok(())
     }
     
     pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let runtime_dir = PathBuf::from(&home).join(".nexa");
-        
         // Check if server is running
-        if let Ok(state_str) = fs::read_to_string(runtime_dir.join("nexa.state")) {
+        if let Ok(state_str) = fs::read_to_string(&self.state_file) {
             if state_str.trim() != "Running" {
                 return Err("Server is not running".into());
             }
@@ -310,15 +299,15 @@ impl CliHandler {
         
         // Stop server
         let server = Server::new(
-            runtime_dir.join("nexa.pid"),
-            runtime_dir.join("nexa.sock")
+            self.pid_file.clone(),
+            self.socket_path.clone()
         );
         
         server.stop().await?;
         
         // Clean up state file
-        let _ = fs::remove_file(runtime_dir.join("nexa.state"));
-        let _ = fs::remove_file(runtime_dir.join("nexa.pid"));
+        let _ = fs::remove_file(&self.state_file);
+        let _ = fs::remove_file(&self.pid_file);
         
         Ok(())
     }
