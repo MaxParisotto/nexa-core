@@ -328,9 +328,7 @@ impl ClusterManager {
         
         tokio::spawn(async move {
             loop {
-                let timeout = rand::thread_rng().gen_range(
-                    config.election_timeout.0..=config.election_timeout.1
-                );
+                let timeout = rand::rng().random_range(config.election_timeout.0..=config.election_timeout.1);
                 time::sleep(timeout).await;
                 
                 if task_tx.send(ClusterTask::CheckElection).await.is_err() {

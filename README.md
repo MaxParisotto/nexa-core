@@ -272,7 +272,7 @@ For questions or support:
 
 A command-line interface for managing AI agents and workflows.
 
-## Installation
+# Installation
 
 ```bash
 cargo install --path .
@@ -329,8 +329,6 @@ nexa-core execute-workflow --id <ID>
 - `RUST_LOG`: Set logging level (e.g., `info`, `debug`, `trace`)
 - `NEXA_PORT`: Default port for the server (default: 8080)
 
-## Development
-
 ```bash
 # Build the project
 cargo build
@@ -341,7 +339,3 @@ cargo test
 # Run with logging
 RUST_LOG=info cargo run -- [COMMAND]
 ```
-
-## License
-
-MIT License

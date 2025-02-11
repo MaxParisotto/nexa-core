@@ -6,6 +6,7 @@ use axum::{
     Json,
     extract::{Path, State},
     http::StatusCode,
+    body::Body,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -214,7 +215,7 @@ impl ApiServer {
             success: true,
             data: Some(ServerStatusResponse {
                 status: status.to_string(),
-                cpu_usage: sys.global_cpu_info().cpu_usage(),
+                cpu_usage: sys.global_cpu_usage(),
                 memory_usage: sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0,
             }),
             error: None,
@@ -462,7 +463,6 @@ mod tests {
     use super::*;
     use axum::http::Request;
     use tower::ServiceExt;
-    use hyper::Body;
 
     #[tokio::test]
     async fn test_api_responses() {
@@ -482,7 +482,7 @@ mod tests {
                     .uri("/api/server/status")
                     .method("GET")
                     .body(Body::empty())
-                    .unwrap(),
+                    .expect("Failed to build request")
             )
             .await
             .unwrap();

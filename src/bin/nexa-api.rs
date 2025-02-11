@@ -7,6 +7,8 @@ use tower_http::cors::{CorsLayer, Any};
 use tower_http::trace::{TraceLayer, DefaultMakeSpan, DefaultOnResponse};
 use log::{info, error, LevelFilter};
 use tracing::Level;
+use axum::serve;
+use tokio::net::TcpListener;
 
 const API_VERSION: &str = "1.0.0";
 const API_DESCRIPTION: &str = "Nexa Core API Server - REST API for managing Nexa Core server, agents, and workflows";
@@ -52,14 +54,15 @@ async fn main() {
     info!("  - CORS: ✓");
     info!("  - Request Tracing: ✓");
     info!("  - Interactive API Documentation: ✓");
-
     // Start server with improved error handling
-    if let Err(e) = axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await {
-        error!("Server error: {}", e);
-        error!("Error details: {:?}", e);
+    let listener = TcpListener::bind(addr).await.expect("Failed to bind to address");
+    info!("Server listening on {}", addr);
+    
+    if let Err(err) = serve(listener, app).await {
+        error!("Server error: {}", err);
+        error!("Error details: {:?}", err);
         std::process::exit(1);
     }
+    
     info!("Server stopped gracefully");
 } 

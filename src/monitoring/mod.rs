@@ -454,7 +454,7 @@ fn get_cpu_usage() -> f64 {
     let mut sys = System::new_all();
     sys.refresh_all();
     // sysinfo returns CPU usage as a percentage (0-100), convert to 0-1 range
-    (sys.global_cpu_info().cpu_usage() as f64) / 100.0
+    (sys.global_cpu_usage() as f64) / 100.0
 }
 
 #[cfg(test)]

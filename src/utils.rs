@@ -38,11 +38,9 @@ async fn handle_ws_messages(mut ws_stream: WebSocketStream<TcpStream>) -> Result
                             "code": 200,
                             "message": "Message received"
                         });
-                        ws_stream.send(Message::Text(response.to_string()))
+                            ws_stream.send(Message::Text(response.to_string().into()))
                             .await
                             .map_err(|e| NexaError::System(e.to_string()))?;
-                    }
-                    Message::Close(_) => {
                         debug!("Client initiated close");
                         break;
                     }
@@ -53,7 +51,7 @@ async fn handle_ws_messages(mut ws_stream: WebSocketStream<TcpStream>) -> Result
                             "code": 400,
                             "message": "Unsupported message type"
                         });
-                        ws_stream.send(Message::Text(response.to_string()))
+                            ws_stream.send(Message::Text(response.to_string().into()))
                             .await
                             .map_err(|e| NexaError::System(e.to_string()))?;
                     }

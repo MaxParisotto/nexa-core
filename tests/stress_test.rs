@@ -45,11 +45,11 @@ async fn test_server_stress() -> Result<(), NexaError> {
                             "type": "test",
                             "id": i
                         });
-                        let _ = ws_stream.send(Message::Text(msg.to_string())).await;
+                        // Fix: Convert the string to Utf8Bytes explicitly using .into()
+                        let _ = ws_stream.send(Message::Text(msg.to_string().into())).await;
                         
                         // Wait a bit
                         tokio::time::sleep(Duration::from_millis(100)).await;
-                        
                         // Close connection gracefully
                         let _ = ws_stream.close(None).await;
                     }

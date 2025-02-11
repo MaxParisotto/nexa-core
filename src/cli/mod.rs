@@ -341,7 +341,7 @@ impl CliHandler {
         );
         println!("Server State: {:?}", state);
         println!("Resource Usage:");
-        println!("  CPU: {:.1}%", sys.global_cpu_info().cpu_usage());
+        println!("  CPU: {:.1}%", sys.global_cpu_usage());
         println!("  Memory: {:.1}%", sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0);
         
         if state != "Running" {
