@@ -180,10 +180,10 @@ impl MonitoringSystem {
 
     async fn update_metrics_history(&self, metrics: &SystemMetrics) {
         let mut history = self.metrics_history.write().await;
-        if history.len() >= 1000 {
-            history.remove(0); // Remove oldest entry if at capacity
+        if (*history).len() >= 1000 {
+            (*history).remove(0); // Remove oldest entry if at capacity
         }
-        history.push(metrics.clone());
+        (*history).push(metrics.clone());
     }
 
     async fn update_alerts(&self, new_alerts: Vec<SystemAlert>) {
@@ -325,10 +325,10 @@ impl MonitoringSystem {
 
                 if config.detailed_metrics {
                     let mut history = metrics_history.write().await;
-                    if history.len() >= 1000 {
-                        history.remove(0);
+                    if (*history).len() >= 1000 {
+                        (*history).remove(0);
                     }
-                    history.push(metrics.clone());
+                    (*history).push(metrics.clone());
                 }
 
                 // Update health status
@@ -500,10 +500,13 @@ mod tests {
         
         // Create custom config with high thresholds to ensure test passes
         let config = MonitoringConfig {
+            enabled: true,
+            detailed_metrics: true,
+            metrics_interval_secs: 60,
+            history_size: 1000,
             cpu_threshold: 95.0,    // High threshold
             memory_threshold: 95.0,  // High threshold
             health_check_interval: 1,
-            detailed_metrics: true,
         };
         
         let monitoring = MonitoringSystem::with_config(memory_manager, token_manager, config);
@@ -554,10 +557,13 @@ mod tests {
         let mut monitoring = MonitoringSystem::new(memory_manager, token_manager);
 
         let new_config = MonitoringConfig {
+            enabled: true,
+            detailed_metrics: false,
+            metrics_interval_secs: 60,
+            history_size: 1000,
             cpu_threshold: 70.0,
             memory_threshold: 80.0,
             health_check_interval: 5,
-            detailed_metrics: false,
         };
 
         monitoring.update_config(new_config.clone());

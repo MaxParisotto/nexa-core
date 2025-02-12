@@ -205,11 +205,6 @@ impl MessageBuffer {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-
-    pub async fn cleanup_expired(&mut self) {
-        let _now = SystemTime::now();
-        // TODO: Implement cleanup logic
-    }
 }
 
 #[cfg(test)]

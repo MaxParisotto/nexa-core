@@ -6,6 +6,10 @@ default-run = "nexa"
 description = "High-performance multi-agent system management tool"
 authors = ["Nexa Team"]
 
+[features]
+default = ["monitoring"]
+monitoring = []
+
 [dependencies]
 tokio = { version = "1.43.0", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["net"] }

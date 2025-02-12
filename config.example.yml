@@ -1,0 +1,58 @@
+# Nexa Core Server Configuration
+
+# Server settings
+host: "127.0.0.1"  # Server bind address
+port: 3000         # Server port
+max_connections: 1000  # Maximum number of concurrent connections
+
+# LLM (Language Model) configuration
+llm:
+  # Default timeout for LLM requests in seconds
+  timeout_secs: 30
+  # Maximum tokens to generate
+  max_tokens: 2000
+  
+  # LLM providers configuration
+  providers:
+    # LM Studio configuration
+    - name: "lmstudio"
+      url: "http://localhost:1234"
+      enabled: true
+      models:
+        - "qwen2.5-coder-3b-instruct"
+        - "deepseek-coder-6.7b"
+        - "codellama-7b"
+
+    # Ollama configuration
+    - name: "ollama"
+      url: "http://localhost:11434"
+      enabled: true
+      models:
+        - "deepseek-r1:1.5b"
+        - "codellama:7b"
+        - "mistral:7b"
+
+    # OpenAI configuration (optional)
+    - name: "openai"
+      url: "https://api.openai.com/v1"
+      enabled: false
+      api_key: ""  # Set your OpenAI API key here
+      models:
+        - "gpt-4"
+        - "gpt-3.5-turbo"
+
+# Logging configuration
+logging:
+  level: "info"  # Log level (debug, info, warn, error)
+  file: "logs/nexa.log"  # Log file path
+  console: true  # Whether to also log to console
+
+# Monitoring configuration
+monitoring:
+  enabled: true  # Enable system monitoring
+  detailed_metrics: true  # Collect detailed metrics
+  metrics_interval_secs: 60  # How often to collect metrics
+  history_size: 1000  # How many historical metrics to keep
+  cpu_threshold: 80.0  # CPU usage threshold (percentage)
+  memory_threshold: 90.0  # Memory usage threshold (percentage)
+  health_check_interval: 30  # Health check interval in seconds 

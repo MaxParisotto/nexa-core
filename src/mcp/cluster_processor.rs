@@ -263,14 +263,57 @@ impl ClusterProcessor {
     }
 
     /// Rebalance nodes in the cluster to ensure even load distribution
-    /// TODO: This method will be used when implementing dynamic load balancing
     #[allow(dead_code)]
     async fn rebalance_nodes(&self) -> Result<(), NexaError> {
         // Get node load information
         let nodes = self.manager.get_active_nodes().await?;
         
-        // TODO: Implement rebalancing logic
-        debug!("Rebalancing {} nodes", nodes.len());
+        if nodes.is_empty() {
+            debug!("No nodes to rebalance");
+            return Ok(());
+        }
+
+        // Calculate load metrics for each node based on capabilities
+        let mut node_loads: Vec<(Uuid, f64)> = nodes.iter()
+            .map(|node| {
+                let cpu_weight = node.capabilities.cpu_cores as f64;
+                let memory_weight = (node.capabilities.memory_mb / 1024) as f64; // Convert to GB
+                let load = cpu_weight * 0.6 + memory_weight * 0.4;
+                (node.id, load)
+            })
+            .collect();
+
+        // Sort nodes by load
+        node_loads.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Calculate average load
+        let avg_load = node_loads.iter().map(|(_, load)| load).sum::<f64>() / nodes.len() as f64;
+        let threshold = avg_load * 0.2; // 20% deviation threshold
+
+        // Identify overloaded and underloaded nodes
+        let overloaded: Vec<_> = node_loads.iter()
+            .filter(|(_, load)| *load > avg_load + threshold)
+            .collect();
+        let underloaded: Vec<_> = node_loads.iter()
+            .filter(|(_, load)| *load < avg_load - threshold)
+            .collect();
+
+        // Perform load balancing by transferring messages
+        for (over_node_id, over_load) in overloaded {
+            if let Some((under_node_id, under_load)) = underloaded.first() {
+                debug!(
+                    "Rebalancing: moving messages from {} (load: {:.2}) to {} (load: {:.2})",
+                    over_node_id, over_load, under_node_id, under_load
+                );
+                
+                // Transfer messages in batches
+                if let Err(e) = self.manager.transfer_messages(*over_node_id, *under_node_id, 10).await {
+                    error!("Failed to transfer messages: {}", e);
+                }
+            }
+        }
+
+        debug!("Rebalancing complete for {} nodes", nodes.len());
         Ok(())
     }
 }
