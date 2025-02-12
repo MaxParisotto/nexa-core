@@ -1,30 +1,27 @@
 use std::{
-    collections::HashMap,
     path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime},
-    net::SocketAddr,
-    str::FromStr,
     fs,
+    str::FromStr,
+    net::SocketAddr,
 };
 use tokio::{
-    sync::RwLock,
-    net::{TcpListener, TcpStream},
+    sync::{RwLock, broadcast},
+    task::JoinHandle,
+    net::TcpListener,
 };
-use log::{error, info, debug};
-use tokio_tungstenite::{
-    WebSocketStream,
-    tungstenite::protocol::Message,
-    accept_async,
-};
-use futures::{
-    stream::{SplitStream, SplitSink},
-    StreamExt,
-    SinkExt,
-};
-use uuid::Uuid;
-use crate::error::NexaError;
+use log::{error, info, warn};
 use serde::{Serialize, Deserialize};
+use tower_http::{
+    cors::CorsLayer,
+    trace::TraceLayer,
+};
+use crate::{
+    cli::{CliError, CliHandler},
+    api::ApiServer,
+};
+use chrono;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ServerState {
@@ -32,6 +29,19 @@ pub enum ServerState {
     Running,
     Stopping,
     Stopped,
+    Error,
+}
+
+impl std::fmt::Display for ServerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServerState::Starting => write!(f, "Starting"),
+            ServerState::Running => write!(f, "Running"),
+            ServerState::Stopping => write!(f, "Stopping"),
+            ServerState::Stopped => write!(f, "Stopped"),
+            ServerState::Error => write!(f, "Error"),
+        }
+    }
 }
 
 impl FromStr for ServerState {
@@ -43,12 +53,13 @@ impl FromStr for ServerState {
             "Running" => Ok(ServerState::Running),
             "Stopping" => Ok(ServerState::Stopping),
             "Stopped" => Ok(ServerState::Stopped),
+            "Error" => Ok(ServerState::Error),
             _ => Err(format!("Invalid server state: {}", s)),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerMetrics {
     pub total_connections: u64,
     pub active_connections: u32,
@@ -56,10 +67,28 @@ pub struct ServerMetrics {
     pub last_error: Option<String>,
     pub uptime: Duration,
     pub start_time: Option<SystemTime>,
+    pub http_port: u16,
+    pub version: String,
+    pub build_info: BuildInfo,
+    pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildInfo {
+    pub version: String,
+    pub git_hash: Option<String>,
+    pub build_timestamp: String,
+    pub rust_version: String,
+    pub target_os: String,
+    pub target_arch: String,
 }
 
 impl ServerMetrics {
     pub fn new() -> Self {
+        // Get target info at runtime
+        let target_os = std::env::consts::OS.to_string();
+        let target_arch = std::env::consts::ARCH.to_string();
+
         Self {
             total_connections: 0,
             active_connections: 0,
@@ -67,6 +96,22 @@ impl ServerMetrics {
             last_error: None,
             uptime: Duration::from_secs(0),
             start_time: Some(SystemTime::now()),
+            http_port: 3000,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            build_info: BuildInfo {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                git_hash: option_env!("GIT_HASH").map(String::from),
+                build_timestamp: chrono::Utc::now().to_rfc3339(),
+                rust_version: rustc_version_runtime::version().to_string(),
+                target_os,
+                target_arch,
+            },
+            endpoints: vec![
+                "/".to_string(),
+                "/api/server/status".to_string(),
+                "/swagger-ui/".to_string(),
+                "/api-docs/openapi.json".to_string(),
+            ],
         }
     }
 
@@ -78,178 +123,193 @@ impl ServerMetrics {
         self.uptime = Duration::from_secs(0);
         self.start_time = None;
     }
+
+    pub fn update_uptime(&mut self) {
+        if let Some(start) = self.start_time {
+            if let Ok(duration) = SystemTime::now().duration_since(start) {
+                self.uptime = duration;
+            }
+        }
+    }
 }
 
 impl Default for ServerMetrics {
     fn default() -> Self {
-        Self {
-            total_connections: 0,
-            active_connections: 0,
-            failed_connections: 0,
-            last_error: None,
-            uptime: Duration::from_secs(0),
-            start_time: None,
-        }
+        Self::new()
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Server {
-    clients: Arc<RwLock<HashMap<Uuid, SystemTime>>>,
-    port: u16,
     state: Arc<RwLock<ServerState>>,
-    bound_addr: Arc<RwLock<Option<SocketAddr>>>,
-    max_connections: usize,
-    active_connections: Arc<RwLock<usize>>,
-    connected_clients: Arc<RwLock<HashMap<SocketAddr, SystemTime>>>,
     metrics: Arc<RwLock<ServerMetrics>>,
-    listener: Arc<RwLock<Option<TcpListener>>>,
     runtime_dir: PathBuf,
+    server_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    shutdown_tx: broadcast::Sender<()>,
 }
 
 impl Server {
-    pub fn new(pid_file: PathBuf, socket_path: PathBuf) -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let runtime_dir = PathBuf::from(&home).join(".nexa");
-        
-        // Ensure runtime directory exists
-        fs::create_dir_all(&runtime_dir).expect("Failed to create runtime directory");
-        
-        // Write PID file
-        let pid = std::process::id();
-        let _ = fs::write(&pid_file, pid.to_string());
-        
-        // Create Unix domain socket if on Unix
-        #[cfg(unix)]
-        if let Some(parent) = socket_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        
-        let mut initial_metrics = ServerMetrics::new();
-        initial_metrics.start_time = Some(SystemTime::now());
+    pub fn new(pid_file: PathBuf, _socket_path: PathBuf) -> Self {
+        let runtime_dir = pid_file.parent().unwrap_or(&pid_file).to_path_buf();
+        let (shutdown_tx, _) = broadcast::channel(1);
         
         Self {
-            clients: Arc::new(RwLock::new(HashMap::new())),
-            port: 8085,
             state: Arc::new(RwLock::new(ServerState::Stopped)),
-            bound_addr: Arc::new(RwLock::new(None)),
-            max_connections: 100,
-            active_connections: Arc::new(RwLock::new(0)),
-            connected_clients: Arc::new(RwLock::new(HashMap::new())),
-            metrics: Arc::new(RwLock::new(initial_metrics)),
-            listener: Arc::new(RwLock::new(None)),
+            metrics: Arc::new(RwLock::new(ServerMetrics::new())),
             runtime_dir,
+            server_handle: Arc::new(RwLock::new(None)),
+            shutdown_tx,
         }
     }
 
-    async fn save_state(&self, state: ServerState) -> Result<(), Box<dyn std::error::Error>> {
-        let state_file = self.runtime_dir.join("nexa.state");
-        let state_str = match state {
-            ServerState::Starting => "Starting",
-            ServerState::Running => "Running",
-            ServerState::Stopping => "Stopping",
-            ServerState::Stopped => "Stopped",
-        };
-        fs::write(state_file, state_str)?;
-        Ok(())
-    }
-
-    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(&self) -> Result<(), CliError> {
         let mut state = self.state.write().await;
+        if *state == ServerState::Running {
+            return Err(CliError::new("Server is already running".to_string()));
+        }
         *state = ServerState::Starting;
         self.save_state(ServerState::Starting).await?;
-        
-        // Reset all state in a synchronized way
+        drop(state);
+
+        // Initialize metrics
         {
             let mut metrics = self.metrics.write().await;
-            *metrics = ServerMetrics::new();
             metrics.start_time = Some(SystemTime::now());
         }
-        {
-            let mut clients = self.clients.write().await;
-            clients.clear();
-        }
-        {
-            let mut connected = self.connected_clients.write().await;
-            connected.clear();
-        }
-        *self.active_connections.write().await = 0;
-        
-        // Start TCP listener
-        let addr = format!("0.0.0.0:{}", self.port);
+
+        // Create API server with Swagger UI
+        let api = ApiServer::new(CliHandler::new());
+        let router = api.router()
+            // Add root redirect to Swagger UI
+            .route("/", axum::routing::get(|| async {
+                axum::response::Redirect::permanent("/swagger-ui/")
+            }))
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(tower_http::cors::Any)
+                    .allow_methods(tower_http::cors::Any)
+                    .allow_headers(tower_http::cors::Any)
+                    .max_age(Duration::from_secs(3600))
+            )
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(|request: &axum::http::Request<_>| {
+                        tracing::info_span!(
+                            "http_request",
+                            method = %request.method(),
+                            uri = %request.uri(),
+                            version = ?request.version(),
+                        )
+                    })
+            );
+
+        // Create server
+        let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
         let listener = match TcpListener::bind(&addr).await {
-            Ok(l) => l,
+            Ok(listener) => {
+                info!("Server listening on {}", addr);
+                info!("API Documentation: http://{}/swagger-ui/", addr);
+                info!("OpenAPI Spec: http://{}/api-docs/openapi.json", addr);
+                listener
+            }
             Err(e) => {
-                *state = ServerState::Stopped;
-                self.save_state(ServerState::Stopped).await?;
-                return Err(NexaError::Server(format!("Failed to bind to address: {}", e)).into());
+                error!("Failed to bind server: {}", e);
+                let mut state = self.state.write().await;
+                *state = ServerState::Error;
+                self.save_state(ServerState::Error).await?;
+                return Err(CliError::new(format!("Failed to start server: {}", e)));
             }
         };
-        
-        let bound_addr = match listener.local_addr() {
-            Ok(addr) => addr,
-            Err(e) => {
-                *state = ServerState::Stopped;
-                self.save_state(ServerState::Stopped).await?;
-                return Err(NexaError::Server(format!("Failed to get local address: {}", e)).into());
+
+        // Create shutdown channel
+        let mut notify_shutdown_rx = self.shutdown_tx.subscribe();
+
+        // Create server task
+        let server_task = axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = notify_shutdown_rx.recv().await;
+                info!("Received shutdown signal, stopping server");
+            });
+
+        // Start server in background task
+        let handle = tokio::spawn(async move {
+            info!("Starting HTTP server");
+            if let Err(e) = server_task.await {
+                error!("Server error: {}", e);
             }
-        };
-        
-        *self.bound_addr.write().await = Some(bound_addr);
-        *self.listener.write().await = Some(listener);
-        
-        info!("WebSocket server listening on: {}", bound_addr);
-        
-        *state = ServerState::Running;
-        self.save_state(ServerState::Running).await?;
-        drop(state);
-        
-        // Start server loop in a separate task
-        let server = self.clone();
+            info!("HTTP server stopped");
+        });
+
+        // Store server handle
+        {
+            let mut server_handle = self.server_handle.write().await;
+            *server_handle = Some(handle);
+        }
+
+        // Start metrics update task
+        let metrics = self.metrics.clone();
         tokio::spawn(async move {
-            if let Some(listener) = &*server.listener.read().await {
-                loop {
-                    let state = server.state.read().await;
-                    if *state != ServerState::Running {
-                        break;
-                    }
-                    drop(state);
-                    
-                    match listener.accept().await {
-                        Ok((stream, addr)) => {
-                            info!("New connection from: {}", addr);
-                            let server = server.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = server.handle_connection(stream, addr).await {
-                                    error!("Error handling connection: {}", e);
-                                    let mut metrics = server.metrics.write().await;
-                                    metrics.failed_connections += 1;
-                                    metrics.last_error = Some(e.to_string());
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            error!("Failed to accept connection: {}", e);
-                            let mut metrics = server.metrics.write().await;
-                            metrics.failed_connections += 1;
-                            metrics.last_error = Some(e.to_string());
-                        }
-                    }
-                }
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let mut metrics = metrics.write().await;
+                metrics.update_uptime();
             }
         });
 
+        // Wait a bit to ensure server is actually running
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Update state to running
+        let mut state = self.state.write().await;
+        *state = ServerState::Running;
+        self.save_state(ServerState::Running).await?;
+
+        // Handle Ctrl+C
+        let shutdown_tx = self.shutdown_tx.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            info!("Received Ctrl+C signal");
+            let _ = shutdown_tx.send(());
+        });
+
+        // Keep the server running until shutdown is requested
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                info!("Main process received shutdown signal");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("Main process received Ctrl+C");
+                let _ = self.shutdown_tx.send(());
+            }
+        }
+
         Ok(())
     }
 
-    pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn stop(&self) -> Result<(), CliError> {
         let mut state = self.state.write().await;
         *state = ServerState::Stopping;
         self.save_state(ServerState::Stopping).await?;
         
-        // Clear listener to stop accepting new connections
-        if let Some(listener) = self.listener.write().await.take() {
-            drop(listener);
+        // Signal server shutdown
+        if let Err(e) = self.shutdown_tx.send(()) {
+            error!("Failed to send shutdown signal: {}", e);
+        }
+        info!("Sent shutdown signal to server");
+        
+        // Wait for server to stop
+        {
+            let mut server_handle = self.server_handle.write().await;
+            if let Some(handle) = server_handle.take() {
+                match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                    Ok(_) => info!("Server stopped gracefully"),
+                    Err(_) => {
+                        warn!("Server shutdown timed out");
+                    }
+                }
+            }
         }
         
         // Reset metrics
@@ -260,124 +320,42 @@ impl Server {
         *state = ServerState::Stopped;
         self.save_state(ServerState::Stopped).await?;
         
-        // Clean up files
-        let _ = fs::remove_file(self.runtime_dir.join("nexa.state"));
-        let _ = fs::remove_file(self.runtime_dir.join("nexa.pid"));
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub async fn get_state(&self) -> ServerState {
-        self.state.read().await.clone()
-    }
-
-    pub async fn get_active_connections(&self) -> usize {
-        let clients = self.connected_clients.read().await;
-        clients.len()
-    }
-
-    #[allow(dead_code)]
-    pub async fn get_metrics(&self) -> ServerMetrics {
-        self.metrics.write().await.clone()
-    }
-
-    async fn handle_connection(&self, socket: TcpStream, addr: SocketAddr) -> Result<(), NexaError> {
-        let active_conns = self.get_active_connections().await;
+    async fn save_state(&self, state: ServerState) -> Result<(), CliError> {
+        let state_file = self.runtime_dir.join("nexa.state");
+        let pid_file = self.runtime_dir.join("nexa.pid");
         
-        if active_conns >= self.max_connections {
-            let mut metrics = self.metrics.write().await;
-            metrics.failed_connections += 1;
-            metrics.last_error = Some("Maximum connections reached".to_string());
-            error!("Connection rejected: maximum connections ({}) reached", self.max_connections);
-            return Err(NexaError::Server("Maximum connections reached".to_string()));
-        }
-
-        if let Err(e) = socket.set_nodelay(true) {
-            let mut metrics = self.metrics.write().await;
-            metrics.failed_connections += 1;
-            metrics.last_error = Some(e.to_string());
-            error!("Failed to set TCP_NODELAY: {}", e);
-            return Err(NexaError::from(e));
+        // Create runtime directory if it doesn't exist
+        if !self.runtime_dir.exists() {
+            fs::create_dir_all(&self.runtime_dir).map_err(|e| CliError::new(e.to_string()))?;
         }
         
-        let ws_stream = match accept_async(socket).await {
-            Ok(stream) => stream,
-            Err(e) => {
-                let mut metrics = self.metrics.write().await;
-                metrics.failed_connections += 1;
-                metrics.last_error = Some(e.to_string());
-                error!("WebSocket handshake failed: {}", e);
-                return Err(NexaError::from(e));
+        // Write state file first
+        let state_str = state.to_string();
+        
+        // Write state file atomically using a temporary file
+        let temp_state = state_file.with_extension("tmp");
+        fs::write(&temp_state, &state_str).map_err(|e| CliError::new(e.to_string()))?;
+        fs::rename(&temp_state, &state_file).map_err(|e| CliError::new(e.to_string()))?;
+        
+        // Handle PID file based on state
+        match state {
+            ServerState::Running => {
+                // Write PID file atomically
+                let temp_pid = pid_file.with_extension("tmp");
+                fs::write(&temp_pid, std::process::id().to_string()).map_err(|e| CliError::new(e.to_string()))?;
+                fs::rename(&temp_pid, &pid_file).map_err(|e| CliError::new(e.to_string()))?;
             }
-        };
-        
-        let (write_half, read_half) = ws_stream.split();
-        
-        // Update metrics and connection tracking
-        {
-            let mut metrics = self.metrics.write().await;
-            metrics.total_connections += 1;
-            metrics.active_connections += 1;
-            info!("New connection established - Total: {}, Active: {}, Failed: {}", 
-                metrics.total_connections, 
-                metrics.active_connections, 
-                metrics.failed_connections
-            );
-        }
-        {
-            let client_id = Uuid::new_v4();
-            self.clients.write().await.insert(client_id, SystemTime::now());
-            self.connected_clients.write().await.insert(addr, SystemTime::now());
-            *self.active_connections.write().await += 1;
-        }
-
-        debug!("Processing WebSocket connection from {}", addr);
-        self.process_ws_connection(read_half, write_half, addr).await?;
-
-        // Cleanup connection
-        {
-            self.connected_clients.write().await.remove(&addr);
-            *self.active_connections.write().await = self.active_connections.write().await.saturating_sub(1);
-            let mut metrics = self.metrics.write().await;
-            metrics.active_connections = metrics.active_connections.saturating_sub(1);
-            debug!("Connection closed - Active: {}", metrics.active_connections);
-        }
-
-        Ok(())
-    }
-
-    async fn process_ws_connection(
-        &self,
-        mut read: SplitStream<WebSocketStream<TcpStream>>,
-        mut write: SplitSink<WebSocketStream<TcpStream>, Message>,
-        addr: SocketAddr,
-    ) -> Result<(), NexaError> {
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(msg) => {
-                    match msg {
-                        Message::Text(text) => {
-                            if let Err(e) = write.send(Message::Text(text)).await {
-                                error!("Failed to send message: {}", e);
-                                break;
-                            }
-                        }
-                        Message::Close(_) => break,
-                        Message::Ping(data) => {
-                            if let Err(e) = write.send(Message::Pong(data)).await {
-                                error!("Failed to send pong: {}", e);
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                Err(e) => {
-                    error!("Error receiving message from {}: {}", addr, e);
-                    break;
-                }
+            ServerState::Stopped | ServerState::Error => {
+                // Clean up files
+                let _ = fs::remove_file(&state_file);
+                let _ = fs::remove_file(&pid_file);
             }
+            _ => {}
         }
+        
         Ok(())
     }
 } 

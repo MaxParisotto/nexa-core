@@ -17,6 +17,8 @@ use reqwest;
 use serde_json;
 use uuid;
 use chrono::Utc;
+use futures::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message;
 use crate::error::NexaError;
 use crate::llm::system_helper::TaskPriority;
 use crate::types::agent::{Agent, AgentStatus, AgentConfig, AgentMetrics};
@@ -239,6 +241,7 @@ impl CliHandler {
             ServerState::Starting => "Starting",
             ServerState::Stopping => "Stopping",
             ServerState::Stopped => "Stopped",
+            ServerState::Error => "Error",
         }).map_err(|e| NexaError::Io(e.to_string()))?;
 
         // Handle PID file based on state
@@ -247,7 +250,7 @@ impl CliHandler {
                 fs::write(&self.pid_file, process::id().to_string())
                     .map_err(|e| NexaError::Io(e.to_string()))?;
             }
-            ServerState::Stopped => {
+            ServerState::Stopped | ServerState::Error => {
                 let _ = fs::remove_file(&self.pid_file);
                 let _ = fs::remove_file(&self.state_file);
             }
@@ -270,7 +273,7 @@ impl CliHandler {
         }
     }
 
-    pub async fn start(&self, port: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(&self, port: Option<&str>) -> Result<(), CliError> {
         // Create runtime directory if needed
         if let Some(parent) = self.state_file.parent() {
             fs::create_dir_all(parent)?;
@@ -279,7 +282,17 @@ impl CliHandler {
         // Check if server is already running
         if let Ok(state_str) = fs::read_to_string(&self.state_file) {
             if state_str.trim() == "Running" {
-                return Err("Server is already running".into());
+                // Double check if the process is actually running
+                if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
+                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                        if unsafe { libc::kill(pid, 0) } == 0 {
+                            return Err(CliError::new("Server is already running".to_string()));
+                        }
+                    }
+                }
+                // If we get here, the process is not running but the state file exists
+                let _ = fs::remove_file(&self.state_file);
+                let _ = fs::remove_file(&self.pid_file);
             }
         }
         
@@ -289,22 +302,70 @@ impl CliHandler {
             self.socket_path.clone()
         );
         
-        server.start().await?;
-        
-        // Write initial state
-        fs::write(&self.state_file, "Running")?;
-        
-        Ok(())
+        // Try to start the server
+        match server.start().await {
+            Ok(_) => {
+                // Wait for server to fully initialize with increasing intervals
+                let mut total_wait = 0;
+                let max_wait = 5000; // 5 seconds total
+                let mut interval = 100; // Start with 100ms
+
+                while total_wait < max_wait {
+                    tokio::time::sleep(Duration::from_millis(interval)).await;
+                    total_wait += interval;
+
+                    // Check both process and state file
+                    if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
+                        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                            if unsafe { libc::kill(pid, 0) } == 0 {
+                                if let Ok(state_str) = fs::read_to_string(&self.state_file) {
+                                    if state_str.trim() == "Running" {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Increase interval for exponential backoff
+                    interval = std::cmp::min(interval * 2, 1000);
+                }
+
+                // Clean up if server didn't start properly
+                let _ = fs::remove_file(&self.state_file);
+                let _ = fs::remove_file(&self.pid_file);
+                Err(CliError::new("Server failed to start within timeout".to_string()))
+            },
+            Err(e) => {
+                // Clean up state files if start failed
+                let _ = fs::remove_file(&self.state_file);
+                let _ = fs::remove_file(&self.pid_file);
+                error!("Failed to start server: {}", e);
+                Err(CliError::new(e.to_string()))
+            }
+        }
     }
     
-    pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn stop(&self) -> Result<(), CliError> {
         // Check if server is running
+        let mut server_running = false;
         if let Ok(state_str) = fs::read_to_string(&self.state_file) {
-            if state_str.trim() != "Running" {
-                return Err("Server is not running".into());
+            if state_str.trim() == "Running" {
+                if let Ok(pid_str) = fs::read_to_string(&self.pid_file) {
+                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                        if unsafe { libc::kill(pid, 0) } == 0 {
+                            server_running = true;
+                        }
+                    }
+                }
             }
-        } else {
-            return Err("Server is not running".into());
+        }
+
+        if !server_running {
+            // Clean up stale files
+            let _ = fs::remove_file(&self.state_file);
+            let _ = fs::remove_file(&self.pid_file);
+            return Err(CliError { message: "Server is not running".to_string() });
         }
         
         // Stop server
@@ -313,16 +374,27 @@ impl CliHandler {
             self.socket_path.clone()
         );
         
-        server.stop().await?;
-        
-        // Clean up state file
-        let _ = fs::remove_file(&self.state_file);
-        let _ = fs::remove_file(&self.pid_file);
-        
-        Ok(())
+        // Try to stop the server
+        match server.stop().await {
+            Ok(_) => {
+                // Wait a bit for the server to fully stop
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Clean up state files
+                let _ = fs::remove_file(&self.state_file);
+                let _ = fs::remove_file(&self.pid_file);
+                Ok(())
+            },
+            Err(e) => {
+                // Clean up state files even if stop failed
+                let _ = fs::remove_file(&self.state_file);
+                let _ = fs::remove_file(&self.pid_file);
+                error!("Failed to stop server: {}", e);
+                Err(CliError { message: e.to_string() })
+            }
+        }
     }
     
-    pub async fn status(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn status(&self) -> Result<bool, CliError> {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let runtime_dir = PathBuf::from(&home).join(".nexa");
         
@@ -334,22 +406,49 @@ impl CliHandler {
         } else {
             "Stopped".to_string()
         };
-        
-        println!("\nServer Status: 🟢 Running");
-        println!("Server State: \"Running\"");
-        println!("Resource Usage:");
-        println!("  CPU: {:.1}%", sys.global_cpu_usage());
-        println!("  Memory: {:.1}%", sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0);
-        println!("\nEndpoints:");
-        println!("  API: http://localhost:3000/api");
-        println!("  Swagger UI: http://localhost:3000/swagger-ui/");
-        println!("  OpenAPI Spec: http://localhost:3000/api-docs/openapi.json");
-        
-        if state != "Running" {
+
+        if state == "Running" {
+            // Try to connect to verify server is actually responding
+            let http_port = 3000;
+            let http_url = format!("http://127.0.0.1:{}/api/server/status", http_port);
+            
+            debug!("Checking server health at {}", http_url);
+            let is_responding = match reqwest::get(&http_url).await {
+                Ok(response) => response.status().is_success(),
+                Err(e) => {
+                    debug!("Failed to connect to HTTP endpoint: {}", e);
+                    false
+                }
+            };
+
+            println!("\nServer Status: 🟢 Running");
+            println!("Server State: \"Running\"");
+            println!("Resource Usage:");
+            println!("  CPU: {:.1}%", sys.global_cpu_usage());
+            println!("  Memory: {:.1}%", sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0);
+            
+            if is_responding {
+                println!("\nEndpoints:");
+                println!("  HTTP API: http://localhost:{}", http_port);
+                println!("  Swagger UI: http://localhost:{}/swagger-ui/", http_port);
+            } else {
+                println!("\n⚠️  Warning: Server process is running but HTTP endpoint is not responding");
+                println!("This could be because:");
+                println!("  1. The server is still starting up");
+                println!("  2. The server crashed but left the state file");
+                println!("  3. The HTTP endpoint is misconfigured");
+                println!("\nTry:");
+                println!("  1. Wait a few seconds and check status again");
+                println!("  2. Run: nexa stop && nexa start");
+                println!("  3. Check the server logs for errors");
+            }
+        } else {
+            println!("\nServer Status: 🔴 Stopped");
+            println!("Server State: \"Stopped\"");
             println!("\nTo start the server, run: nexa start");
         }
         
-        Ok(())
+        Ok(state == "Running")
     }
 
     /// Creates a new agent with the given configuration
@@ -1016,6 +1115,67 @@ impl Default for RetryPolicy {
             max_retries: 3,
             backoff_ms: 1000,
             max_backoff_ms: 10000,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CliError {
+    message: String,
+}
+
+impl CliError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into()
+        }
+    }
+}
+
+impl std::fmt::Display for CliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for CliError {}
+
+impl From<std::io::Error> for CliError {
+    fn from(err: std::io::Error) -> Self {
+        Self {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<Box<dyn std::error::Error>> for CliError {
+    fn from(err: Box<dyn std::error::Error>) -> Self {
+        Self {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for CliError {
+    fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        Self {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<std::net::AddrParseError> for CliError {
+    fn from(err: std::net::AddrParseError) -> Self {
+        Self {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<crate::error::NexaError> for CliError {
+    fn from(err: crate::error::NexaError) -> Self {
+        Self {
+            message: err.to_string(),
         }
     }
 }
