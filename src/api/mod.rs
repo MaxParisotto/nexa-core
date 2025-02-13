@@ -11,12 +11,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::cli::CliHandler;
+use crate::cli::{CliHandler, LLMModel};
 use crate::types::agent::{AgentConfig, AgentStatus, Agent};
 use crate::types::workflow::{WorkflowStep, AgentWorkflow};
-use utoipa::{OpenApi, ToSchema};
+use utoipa::{OpenApi, ToSchema, IntoParams};
 use utoipa_swagger_ui::SwaggerUi;
 use http_body_util::BodyExt;
+use serde_json::json;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiResponse<T> {
@@ -26,6 +27,11 @@ pub struct ApiResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "name": "test_agent",
+    "model": "gpt-4",
+    "provider": "openai"
+}))]
 pub struct AgentRequest {
     #[schema(example = "test_agent")]
     pub name: String,
@@ -36,6 +42,11 @@ pub struct AgentRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "description": "Analyze code for security vulnerabilities",
+    "priority": "high",
+    "agent_id": "agent-123"
+}))]
 pub struct TaskRequest {
     #[schema(example = "Analyze code for security issues")]
     pub description: String,
@@ -45,6 +56,17 @@ pub struct TaskRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "name": "security_analysis",
+    "steps": [
+        {
+            "name": "code_scan",
+            "agent_id": "agent-123",
+            "action": "analyze",
+            "dependencies": []
+        }
+    ]
+}))]
 pub struct WorkflowRequest {
     #[schema(example = "code_analysis")]
     pub name: String,
@@ -78,28 +100,22 @@ pub struct ServerStatusResponse {
     info(
         title = "Nexa Core API",
         version = "1.0.0",
-        description = "REST API for managing Nexa Core server, agents, and workflows",
-        contact(
-            name = "Nexa Team",
-            url = "https://github.com/nexa-core"
-        ),
-        license(
-            name = "MIT",
-            url = "https://opensource.org/licenses/MIT"
-        )
+        description = "REST API for managing Nexa Core server, agents, and workflows"
     ),
     components(
         schemas(
             ApiResponse<ServerStatusResponse>,
-            ApiResponse<Vec<crate::types::agent::Agent>>,
-            ApiResponse<crate::types::agent::Agent>,
-            ApiResponse<Vec<crate::cli::LLMModel>>,
-            ApiResponse<AgentWorkflow>,
             AgentRequest,
             TaskRequest,
             WorkflowRequest,
             ServerStatusResponse
         )
+    ),
+    paths(
+        get_server_status,
+        list_agents,
+        create_agent,
+        list_models
     ),
     tags(
         (name = "server", description = "Server management endpoints"),
@@ -107,19 +123,55 @@ pub struct ServerStatusResponse {
         (name = "llm", description = "LLM management endpoints"),
         (name = "tasks", description = "Task management endpoints"),
         (name = "workflows", description = "Workflow management endpoints")
-    ),
-    servers(
-        (url = "http://localhost:3000", description = "Local development server")
-    ),
-    security(
-        ()
-    ),
-    external_docs(
-        url = "https://github.com/nexa-core/docs",
-        description = "Find more information here"
     )
 )]
 pub struct ApiDoc;
+
+/// Server status endpoint
+#[utoipa::path(
+    get,
+    path = "/api/server/status",
+    tag = "server",
+    responses(
+        (status = 200, description = "Server status retrieved successfully", body = ServerStatusResponse)
+    )
+)]
+async fn get_server_status() {}
+
+/// List agents endpoint
+#[utoipa::path(
+    get,
+    path = "/api/agents",
+    tag = "agents",
+    responses(
+        (status = 200, description = "List of agents", body = Vec<Agent>)
+    )
+)]
+async fn list_agents() {}
+
+/// Create agent endpoint
+#[utoipa::path(
+    post,
+    path = "/api/agents",
+    tag = "agents",
+    request_body = AgentRequest,
+    responses(
+        (status = 200, description = "Agent created", body = Agent),
+        (status = 400, description = "Invalid request")
+    )
+)]
+async fn create_agent() {}
+
+/// List models endpoint
+#[utoipa::path(
+    get,
+    path = "/api/llm/models/{provider}",
+    tag = "llm",
+    responses(
+        (status = 200, description = "List of models", body = Vec<LLMModel>)
+    )
+)]
+async fn list_models() {}
 
 #[derive(Debug, Clone)]
 pub struct ApiError(pub String);
