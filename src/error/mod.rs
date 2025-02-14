@@ -5,9 +5,10 @@ use std::io;
 use tokio_tungstenite::tungstenite;
 use std::error::Error as StdError;
 use reqwest;
+use sys_info;
 
 /// Custom error types for the Nexa system
-#[derive(Debug, Error, Clone)]
+#[derive(Error, Debug)]
 pub enum NexaError {
     /// System-level errors
     #[error("System error: {0}")]
@@ -19,7 +20,7 @@ pub enum NexaError {
     
     /// I/O errors
     #[error("IO error: {0}")]
-    Io(String),
+    Io(#[from] io::Error),
     
     /// JSON serialization/deserialization errors
     #[error("JSON error: {0}")]
@@ -80,33 +81,64 @@ pub enum NexaError {
     /// Resource errors
     #[error("Resource error: {0}")]
     Resource(String),
-}
 
-impl From<&str> for NexaError {
-    fn from(s: &str) -> Self {
-        NexaError::System(s.to_string())
-    }
+    /// Database errors
+    #[error("Database error: {0}")]
+    Database(String),
+
+    /// API errors
+    #[error("API error: {0}")]
+    Api(String),
+
+    /// Startup errors
+    #[error("Startup error: {0}")]
+    Startup(String),
+
+    /// HTTP errors
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
+    /// Unknown errors
+    #[error("Unknown error: {0}")]
+    Unknown(String),
 }
 
 impl From<String> for NexaError {
-    fn from(s: String) -> Self {
-        NexaError::System(s)
+    fn from(error: String) -> Self {
+        NexaError::Unknown(error)
     }
 }
 
-impl From<io::Error> for NexaError {
-    fn from(e: io::Error) -> Self {
-        NexaError::Io(e.to_string())
+impl From<&str> for NexaError {
+    fn from(error: &str) -> Self {
+        NexaError::Unknown(error.to_string())
+    }
+}
+
+impl From<sys_info::Error> for NexaError {
+    fn from(error: sys_info::Error) -> Self {
+        NexaError::System(error.to_string())
     }
 }
 
 impl From<tungstenite::Error> for NexaError {
-    fn from(e: tungstenite::Error) -> Self {
-        match e {
+    fn from(error: tungstenite::Error) -> Self {
+        match error {
             tungstenite::Error::Protocol(msg) => NexaError::Protocol(msg.to_string()),
-            tungstenite::Error::Io(e) => NexaError::Io(e.to_string()),
+            tungstenite::Error::Io(e) => NexaError::Io(io::Error::new(e.kind(), e.to_string())),
             tungstenite::Error::ConnectionClosed => NexaError::WebSocket("Connection closed".to_string()),
-            _ => NexaError::WebSocket(e.to_string()),
+            _ => NexaError::WebSocket(error.to_string()),
+        }
+    }
+}
+
+impl From<&tungstenite::Error> for NexaError {
+    fn from(error: &tungstenite::Error) -> Self {
+        match error {
+            tungstenite::Error::Protocol(msg) => NexaError::Protocol(msg.to_string()),
+            tungstenite::Error::Io(e) => NexaError::Io(io::Error::new(e.kind(), e.to_string())),
+            tungstenite::Error::ConnectionClosed => NexaError::WebSocket("Connection closed".to_string()),
+            _ => NexaError::WebSocket(error.to_string()),
         }
     }
 }
@@ -129,34 +161,13 @@ impl From<ctrlc::Error> for NexaError {
     }
 }
 
-impl From<reqwest::Error> for NexaError {
-    fn from(err: reqwest::Error) -> Self {
-        if err.is_timeout() {
-            NexaError::LLMResponse("Request timed out".to_string())
-        } else if err.is_connect() {
-            NexaError::LLMConnection("Failed to connect to LLM server".to_string())
-        } else if err.is_body() {
-            NexaError::LLMResponse("Invalid response body".to_string())
-        } else if err.is_decode() {
-            NexaError::LLMResponse("Failed to decode response".to_string())
-        } else {
-            NexaError::LLMError(err.to_string())
-        }
-    }
-}
-
 impl From<Box<dyn StdError>> for NexaError {
-    fn from(err: Box<dyn StdError>) -> Self {
-        if let Some(e) = err.downcast_ref::<tungstenite::Error>() {
-            match e {
-                tungstenite::Error::Protocol(msg) => NexaError::Protocol(msg.to_string()),
-                tungstenite::Error::Io(e) => NexaError::Io(e.to_string()),
-                tungstenite::Error::ConnectionClosed => NexaError::WebSocket("Connection closed".to_string()),
-                _ => NexaError::WebSocket(e.to_string()),
-            }
-        } else if let Some(e) = err.downcast_ref::<io::Error>() {
-            NexaError::Io(e.to_string())
-        } else if let Some(e) = err.downcast_ref::<reqwest::Error>() {
+    fn from(error: Box<dyn StdError>) -> Self {
+        if let Some(e) = error.downcast_ref::<tungstenite::Error>() {
+            e.into()
+        } else if let Some(e) = error.downcast_ref::<io::Error>() {
+            NexaError::Io(io::Error::new(e.kind(), e.to_string()))
+        } else if let Some(e) = error.downcast_ref::<reqwest::Error>() {
             if e.is_timeout() {
                 NexaError::LLMResponse("Request timed out".to_string())
             } else if e.is_connect() {
@@ -169,7 +180,7 @@ impl From<Box<dyn StdError>> for NexaError {
                 NexaError::LLMError(e.to_string())
             }
         } else {
-            NexaError::System(err.to_string())
+            NexaError::Unknown(error.to_string())
         }
     }
 } 

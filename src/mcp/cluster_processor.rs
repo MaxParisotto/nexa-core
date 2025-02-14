@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use tokio::sync::mpsc;
 use log::{debug, error};
 use crate::error::NexaError;
@@ -315,5 +317,18 @@ impl ClusterProcessor {
 
         debug!("Rebalancing complete for {} nodes", nodes.len());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cluster_processor_config() {
+        let config = ClusterProcessorConfig::default();
+        assert_eq!(config.replication_factor, 2);
+        assert_eq!(config.sync_interval, Duration::from_secs(5));
+        assert_eq!(config.redistribution_interval, Duration::from_secs(30));
     }
 }

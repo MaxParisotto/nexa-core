@@ -8,6 +8,7 @@ pub mod mcp;
 pub mod memory;
 pub mod monitoring;
 pub mod server;
+pub mod startup;
 pub mod tokens;
 pub mod types;
 pub mod utils;
@@ -21,6 +22,10 @@ pub use config::{ServerConfig, MonitoringConfig, LoggingConfig, LLMConfig};
 pub use types::{agent, workflow};
 pub use memory::MemoryManager;
 pub use tokens::TokenManager;
+pub use startup::{
+    StartupManager,
+    CheckStatus,
+};
 
 // Monitoring system exports
 #[cfg(feature = "monitoring")]
@@ -31,7 +36,6 @@ pub use monitoring::{
     SystemAlert,
     AlertLevel,
     ResourceMetrics,
-    ResourceMonitor,
 };
 
 #[cfg(test)]

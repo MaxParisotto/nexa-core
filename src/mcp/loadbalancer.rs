@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
 use std::collections::{HashMap, VecDeque};

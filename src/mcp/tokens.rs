@@ -12,26 +12,27 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use log::debug;
 use serde::{Serialize, Deserialize};
-use crate::memory::MemoryManager;
 use crate::tokens::{self, TokenManager as BaseTokenManager};
 
 pub use crate::tokens::TokenMetrics;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub enum ModelType {
+    GPT35Turbo,
     GPT4,
-    GPT35,
     Claude2,
-    Claude3,
+    Ollama,
+    LMStudio,
 }
 
 impl From<ModelType> for tokens::ModelType {
     fn from(model: ModelType) -> Self {
         match model {
+            ModelType::GPT35Turbo => tokens::ModelType::GPT35Turbo,
             ModelType::GPT4 => tokens::ModelType::GPT4,
-            ModelType::GPT35 => tokens::ModelType::GPT35,
             ModelType::Claude2 => tokens::ModelType::Claude2,
-            ModelType::Claude3 => tokens::ModelType::Claude3,
+            ModelType::Ollama => tokens::ModelType::Ollama,
+            ModelType::LMStudio => tokens::ModelType::LMStudio,
         }
     }
 }
@@ -46,13 +47,13 @@ pub struct TokenUsage {
 
 #[derive(Debug)]
 pub struct TokenManager {
-    base_manager: Arc<BaseTokenManager>,
+    base_manager: Arc<tokens::TokenManager>,
 }
 
 impl TokenManager {
-    pub fn new(memory_manager: Arc<MemoryManager>) -> Self {
+    pub fn new() -> Self {
         Self {
-            base_manager: Arc::new(BaseTokenManager::new(memory_manager)),
+            base_manager: Arc::new(tokens::TokenManager::new()),
         }
     }
 

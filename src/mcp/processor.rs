@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 use log::{debug, error, info};
 use crate::error::NexaError;

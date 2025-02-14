@@ -1,19 +1,39 @@
-host: 127.0.0.1
-port: 3000
-max_connections: 1000
+# Nexa Core Server Configuration
+
+# Server settings
+server:
+  host: "127.0.0.1"
+  port: 8080
+  max_connections: 1000
+  connection_timeout: 30
+
+# LLM configuration
 llm:
-  providers: []
-  timeout_secs: 0
-  max_tokens: 0
+  default_model: "lmstudio:qwen2.5-coder-3b-instruct"
+  providers: ["lmstudio", "ollama"]
+  timeout: 30
+  max_tokens: 2048
+
+# Logging configuration  
 logging:
-  level: info
-  file: logs/nexa.log
+  level: "debug"
+  file: "logs/nexa.log"
   console: true
+
+# Monitoring configuration
 monitoring:
   enabled: true
   detailed_metrics: true
-  metrics_interval_secs: 60
+  metrics_interval: 60
   history_size: 1000
+  health_check_interval: 30
   cpu_threshold: 80.0
   memory_threshold: 90.0
-  health_check_interval: 30
+
+# API configuration
+api:
+  endpoints:
+    - "http://localhost:8080/health"
+    - "http://localhost:8080/metrics"
+  timeout: 30
+  retry_attempts: 3 

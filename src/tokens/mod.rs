@@ -10,36 +10,31 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use crate::error::NexaError;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
-use crate::error::NexaError;
-use crate::memory::{MemoryManager, ResourceType};
 use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModelType {
+    GPT35Turbo,
     GPT4,
-    GPT35,
     Claude2,
-    Claude3,
-    Custom(String),
+    Ollama,
+    LMStudio,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TokenMetrics {
-    pub prompt_tokens: usize,
-    pub completion_tokens: usize,
-    pub total_tokens: usize,
-    pub cost: f64,
+    pub total_tokens: u64,
+    pub max_tokens: u64,
 }
 
 impl Default for TokenMetrics {
     fn default() -> Self {
         Self {
-            prompt_tokens: 0,
-            completion_tokens: 0,
             total_tokens: 0,
-            cost: 0.0,
+            max_tokens: 0,
         }
     }
 }
@@ -52,25 +47,34 @@ pub struct UsageRecord {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug)]
 pub struct TokenManager {
+    metrics: Arc<RwLock<TokenMetrics>>,
     usage_records: Arc<RwLock<Vec<UsageRecord>>>,
-    model_limits: HashMap<ModelType, usize>,
-    memory_manager: Arc<MemoryManager>,
+    model_limits: HashMap<ModelType, u64>,
+}
+
+impl std::fmt::Debug for TokenManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenManager")
+            .field("model_limits", &self.model_limits)
+            .finish()
+    }
 }
 
 impl TokenManager {
-    pub fn new(memory_manager: Arc<MemoryManager>) -> Self {
-        Self {
-            usage_records: Arc::new(RwLock::new(Vec::new())),
-            model_limits: HashMap::new(),
-            memory_manager,
-        }
-    }
+    pub fn new() -> Self {
+        let mut model_limits = HashMap::new();
+        model_limits.insert(ModelType::GPT35Turbo, 4096);
+        model_limits.insert(ModelType::GPT4, 8192);
+        model_limits.insert(ModelType::Claude2, 100_000);
+        model_limits.insert(ModelType::Ollama, 4096);
+        model_limits.insert(ModelType::LMStudio, 4096);
 
-    /// Set token limit for a model
-    pub fn set_model_limit(&mut self, model: ModelType, limit: usize) {
-        self.model_limits.insert(model, limit);
+        Self {
+            metrics: Arc::new(RwLock::new(TokenMetrics::default())),
+            usage_records: Arc::new(RwLock::new(Vec::new())),
+            model_limits,
+        }
     }
 
     /// Track token usage for a model interaction
@@ -81,10 +85,12 @@ impl TokenManager {
         completion_tokens: usize,
         metadata: HashMap<String, String>,
     ) -> Result<(), NexaError> {
+        let total = prompt_tokens + completion_tokens;
+        let max = total as u64;
+
         // Check model limits
         if let Some(limit) = self.model_limits.get(&model) {
-            let total = prompt_tokens + completion_tokens;
-            if total > *limit {
+            if total > *limit as usize {
                 return Err(NexaError::System(format!(
                     "Token limit exceeded: {} > {}",
                     total,
@@ -93,29 +99,18 @@ impl TokenManager {
             }
         }
 
-        // Calculate cost (example rates)
+        // Calculate cost (example rates - local models are free)
         let cost = match model {
             ModelType::GPT4 => (prompt_tokens as f64 * 0.03 + completion_tokens as f64 * 0.06) / 1000.0,
-            ModelType::GPT35 => (prompt_tokens as f64 * 0.001 + completion_tokens as f64 * 0.002) / 1000.0,
+            ModelType::GPT35Turbo => (prompt_tokens as f64 * 0.001 + completion_tokens as f64 * 0.002) / 1000.0,
+            ModelType::Ollama | ModelType::LMStudio => 0.0, // Local models are free
             _ => 0.0,
         };
 
         let usage = TokenMetrics {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens + completion_tokens,
-            cost,
+            total_tokens: total as u64,
+            max_tokens: max,
         };
-
-        // Track memory allocation for tokens using memory manager
-        self.memory_manager
-            .allocate(
-                format!("tokens-{:?}-{}", model, Utc::now().timestamp()),
-                ResourceType::TokenBuffer,
-                (prompt_tokens + completion_tokens) * 4, // Approximate memory usage
-                metadata.clone(),
-            )
-            .await?;
 
         // Record usage with all fields
         let mut records = self.usage_records.write().await;
@@ -126,6 +121,7 @@ impl TokenManager {
             metadata,
         });
 
+        self.update_metrics(total as u64, max).await?;
         Ok(())
     }
 
@@ -138,10 +134,8 @@ impl TokenManager {
             .fold(
                 TokenMetrics::default(),
                 |mut acc, r| {
-                    acc.prompt_tokens += r.usage.prompt_tokens;
-                    acc.completion_tokens += r.usage.completion_tokens;
                     acc.total_tokens += r.usage.total_tokens;
-                    acc.cost += r.usage.cost;
+                    acc.max_tokens = acc.max_tokens.max(r.usage.max_tokens);
                     acc
                 },
             )
@@ -150,19 +144,24 @@ impl TokenManager {
     /// Get usage by model type
     pub async fn get_usage_by_model(&self, model: ModelType) -> TokenMetrics {
         let records = self.usage_records.read().await;
-        records
-            .iter()
+        let model_records: Vec<_> = records.iter()
             .filter(|r| r.model == model)
-            .fold(
-                TokenMetrics::default(),
-                |mut acc, r| {
-                    acc.prompt_tokens += r.usage.prompt_tokens;
-                    acc.completion_tokens += r.usage.completion_tokens;
-                    acc.total_tokens += r.usage.total_tokens;
-                    acc.cost += r.usage.cost;
-                    acc
-                },
-            )
+            .collect();
+
+        if model_records.is_empty() {
+            return TokenMetrics::default();
+        }
+
+        let total_tokens = model_records.iter()
+            .map(|r| r.usage.total_tokens)
+            .sum();
+
+        let max_tokens = self.model_limits.get(&model).copied().unwrap_or(0);
+
+        TokenMetrics {
+            total_tokens,
+            max_tokens,
+        }
     }
 
     /// Clear old usage records
@@ -171,6 +170,52 @@ impl TokenManager {
         records.retain(|r| r.timestamp >= before);
         Ok(())
     }
+
+    pub async fn get_usage(&self) -> Result<u64, NexaError> {
+        Ok(self.metrics.read().await.total_tokens)
+    }
+
+    pub async fn get_max_tokens(&self) -> Result<u64, NexaError> {
+        Ok(self.metrics.read().await.max_tokens)
+    }
+
+    pub async fn get_metrics(&self) -> Result<TokenMetrics, NexaError> {
+        Ok(self.metrics.read().await.clone())
+    }
+
+    pub async fn update_metrics(&self, total: u64, max: u64) -> Result<(), NexaError> {
+        let mut metrics = self.metrics.write().await;
+        metrics.total_tokens = total;
+        metrics.max_tokens = max;
+        Ok(())
+    }
+
+    pub async fn record_usage(&self, model: ModelType, total_tokens: u64) -> Result<(), NexaError> {
+        let max_tokens = *self.model_limits.get(&model).unwrap_or(&0);
+        let usage = TokenMetrics {
+            total_tokens,
+            max_tokens,
+        };
+
+        let record = UsageRecord {
+            model,
+            usage,
+            timestamp: Utc::now(),
+            metadata: HashMap::new(),
+        };
+
+        let mut records = self.usage_records.write().await;
+        records.push(record);
+
+        self.update_metrics(total_tokens, max_tokens).await?;
+        Ok(())
+    }
+}
+
+impl Default for TokenManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -178,19 +223,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_token_tracking() {
-        let memory_manager = Arc::new(MemoryManager::new());
-        let token_manager = TokenManager::new(memory_manager);
-        let metadata = HashMap::new();
-
-        assert!(token_manager
-            .track_usage(ModelType::GPT4, 100, 50, metadata.clone())
-            .await
-            .is_ok());
+    async fn test_token_usage() {
+        let token_manager = TokenManager::new();
+        token_manager.record_usage(ModelType::GPT4, 150).await.unwrap();
 
         let usage = token_manager.get_usage_by_model(ModelType::GPT4).await;
         assert_eq!(usage.total_tokens, 150);
-        assert_eq!(usage.prompt_tokens, 100);
-        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.max_tokens, 8192);
     }
 } 

@@ -4,81 +4,74 @@ use crate::error::NexaError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    #[serde(default = "default_host")]
-    pub host: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
-    #[serde(default = "default_max_connections")]
-    pub max_connections: usize,
-    #[serde(default)]
-    pub llm: LLMConfig,
-    #[serde(default)]
-    pub logging: LoggingConfig,
-    #[serde(default)]
+    pub server: ServerSettings,
     pub monitoring: MonitoringConfig,
+    pub logging: LoggingConfig,
+    pub llm: LLMConfig,
+    pub api: ApiConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerSettings {
+    pub host: String,
+    pub port: u16,
+    pub max_connections: usize,
+    pub connection_timeout: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfig {
+    pub endpoints: Vec<String>,
+    pub timeout: u64,
+    pub retry_attempts: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
-    pub providers: Vec<LLMProvider>,
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
-    #[serde(default = "default_max_tokens")]
+    pub default_model: String,
+    pub providers: Vec<String>,
+    pub timeout: u64,
     pub max_tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LLMProvider {
-    pub name: String,
-    pub url: String,
-    pub models: Vec<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
-    #[serde(default = "default_log_level")]
     pub level: String,
-    #[serde(default = "default_log_file")]
     pub file: PathBuf,
-    #[serde(default = "default_true")]
     pub console: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitoringConfig {
-    #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_true")]
     pub detailed_metrics: bool,
-    #[serde(default = "default_metrics_interval")]
-    pub metrics_interval_secs: u64,
-    #[serde(default = "default_history_size")]
+    pub metrics_interval: u64,
     pub history_size: usize,
-    #[serde(default = "default_cpu_threshold")]
-    pub cpu_threshold: f64,
-    #[serde(default = "default_memory_threshold")]
-    pub memory_threshold: f64,
-    #[serde(default = "default_health_check_interval")]
     pub health_check_interval: u64,
+    pub cpu_threshold: f64,
+    pub memory_threshold: f64,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            host: default_host(),
-            port: default_port(),
-            max_connections: default_max_connections(),
-            llm: LLMConfig::default(),
-            logging: LoggingConfig {
-                level: default_log_level(),
-                file: default_log_file(),
-                console: default_true(),
+            server: ServerSettings {
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+                max_connections: 1000,
+                connection_timeout: 30,
             },
             monitoring: MonitoringConfig::default(),
+            logging: LoggingConfig::default(),
+            llm: LLMConfig::default(),
+            api: ApiConfig {
+                endpoints: vec![
+                    "http://localhost:8080/health".to_string(),
+                    "http://localhost:8080/metrics".to_string(),
+                ],
+                timeout: 30,
+                retry_attempts: 3,
+            },
         }
     }
 }
@@ -86,9 +79,9 @@ impl Default for ServerConfig {
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            level: default_log_level(),
-            file: default_log_file(),
-            console: default_true(),
+            level: "info".to_string(),
+            file: PathBuf::from("/var/log/nexa/server.log"),
+            console: true,
         }
     }
 }
@@ -96,67 +89,26 @@ impl Default for LoggingConfig {
 impl Default for MonitoringConfig {
     fn default() -> Self {
         Self {
-            enabled: default_true(),
-            detailed_metrics: default_true(),
-            metrics_interval_secs: default_metrics_interval(),
-            history_size: default_history_size(),
-            cpu_threshold: default_cpu_threshold(),
-            memory_threshold: default_memory_threshold(),
-            health_check_interval: default_health_check_interval(),
+            enabled: true,
+            detailed_metrics: true,
+            metrics_interval: 60,  // 1 minute
+            history_size: 1000,    // Store last 1000 metrics
+            health_check_interval: 30,  // 30 seconds
+            cpu_threshold: 80.0,   // 80%
+            memory_threshold: 90.0, // 90%
         }
     }
 }
 
-fn default_host() -> String {
-    "127.0.0.1".to_string()
-}
-
-fn default_port() -> u16 {
-    3000
-}
-
-fn default_max_connections() -> usize {
-    1000
-}
-
-fn default_timeout() -> u64 {
-    30
-}
-
-fn default_max_tokens() -> usize {
-    2000
-}
-
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
-fn default_log_file() -> PathBuf {
-    PathBuf::from("logs/nexa.log")
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_metrics_interval() -> u64 {
-    60
-}
-
-fn default_history_size() -> usize {
-    1000
-}
-
-fn default_cpu_threshold() -> f64 {
-    80.0 // 80% CPU threshold
-}
-
-fn default_memory_threshold() -> f64 {
-    90.0 // 90% memory threshold
-}
-
-fn default_health_check_interval() -> u64 {
-    30 // 30 seconds
+impl Default for LLMConfig {
+    fn default() -> Self {
+        Self {
+            default_model: "gpt-3.5-turbo".to_string(),
+            providers: vec!["openai".to_string()],
+            timeout: 30,
+            max_tokens: 2048,
+        }
+    }
 }
 
 impl ServerConfig {
@@ -218,5 +170,56 @@ impl ServerConfig {
             .map_err(|e| NexaError::Config(format!("Failed to save config: {}", e)))?;
 
         Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), NexaError> {
+        // Validate server settings
+        if self.server.port == 0 {
+            return Err(NexaError::Config("Invalid server port".to_string()));
+        }
+        if self.server.max_connections == 0 {
+            return Err(NexaError::Config("Invalid max connections".to_string()));
+        }
+        if self.server.connection_timeout == 0 {
+            return Err(NexaError::Config("Invalid connection timeout".to_string()));
+        }
+
+        // Validate monitoring config
+        if self.monitoring.metrics_interval == 0 {
+            return Err(NexaError::Config("Invalid metrics interval".to_string()));
+        }
+
+        // Validate logging config
+        if self.logging.level.is_empty() {
+            return Err(NexaError::Config("Invalid log level".to_string()));
+        }
+
+        // Validate LLM config
+        if self.llm.default_model.is_empty() {
+            return Err(NexaError::Config("Invalid default model".to_string()));
+        }
+        if self.llm.providers.is_empty() {
+            return Err(NexaError::Config("No LLM providers configured".to_string()));
+        }
+        if self.llm.timeout == 0 {
+            return Err(NexaError::Config("Invalid LLM timeout".to_string()));
+        }
+        if self.llm.max_tokens == 0 {
+            return Err(NexaError::Config("Invalid max tokens".to_string()));
+        }
+
+        // Validate API config
+        if self.api.timeout == 0 {
+            return Err(NexaError::Config("Invalid API timeout".to_string()));
+        }
+        if self.api.retry_attempts == 0 {
+            return Err(NexaError::Config("Invalid retry attempts".to_string()));
+        }
+
+        Ok(())
+    }
+
+    pub fn get_api_endpoints(&self) -> Vec<String> {
+        self.api.endpoints.clone()
     }
 } 

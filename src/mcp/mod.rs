@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Multi-agent Control Protocol (MCP) Implementation
 //!
 //! This module provides the core functionality for agent communication and management:
@@ -33,8 +35,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
 use chrono::Utc;
 use crate::mcp::buffer::{BufferedMessage, MessageBuffer, Priority, BufferConfig};
-use crate::monitoring::{SystemMetrics, SystemHealth};
-use crate::memory::{MemoryStats, ResourceType};
+use crate::monitoring::{SystemMetrics, SystemHealth, ResourceType};
 use crate::mcp::tokens::{ModelType, TokenUsage};
 use crate::tokens::TokenMetrics;
 use crate::error::NexaError;
@@ -163,6 +164,15 @@ impl RegistryStub {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MemoryStats {
+    pub total_allocated: usize,
+    pub allocation_count: usize,
+    pub available: usize,
+    pub peak_usage: usize,
+    pub total_used: usize,
+}
+
 pub struct ServerControl {
     pub registry: RegistryStub,
 }
@@ -269,12 +279,16 @@ impl MCP {
 }
 
 // Re-export commonly used types
-pub use cluster::ClusterManager;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::ResourceType;
+
+    #[test]
+    fn test_mcp_state() {
+        let state = GLOBAL_MCP_STATE.write().unwrap();
+        assert_eq!(state.counter, 0);
+    }
 
     #[tokio::test]
     async fn test_server_control() {
@@ -333,7 +347,7 @@ mod tests {
         let agent_id = "test-agent";
 
         assert!(server
-            .track_agent_resources(agent_id, ResourceType::TokenBuffer, 1024)
+            .track_agent_resources(agent_id, ResourceType::Memory, 1024)
             .await
             .is_ok());
 

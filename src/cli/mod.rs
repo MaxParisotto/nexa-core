@@ -30,6 +30,7 @@ use std::time::Duration;
 use sysinfo::System;
 use serde::{Serialize, Deserialize};
 use utoipa::ToSchema;
+use crate::config::ServerConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct LLMModel {
@@ -232,7 +233,7 @@ impl CliHandler {
         // Create parent directory if needed
         if let Some(parent) = self.state_file.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| NexaError::Io(format!("Failed to create state directory: {}", e)))?;
+                .map_err(|e| NexaError::Io(e))?;
         }
         
         // Write state file
@@ -242,13 +243,13 @@ impl CliHandler {
             ServerState::Stopping => "Stopping",
             ServerState::Stopped => "Stopped",
             ServerState::Error => "Error",
-        }).map_err(|e| NexaError::Io(e.to_string()))?;
+        }).map_err(|e| NexaError::Io(e))?;
 
         // Handle PID file based on state
         match state {
             ServerState::Running => {
                 fs::write(&self.pid_file, process::id().to_string())
-                    .map_err(|e| NexaError::Io(e.to_string()))?;
+                    .map_err(|e| NexaError::Io(e))?;
             }
             ServerState::Stopped | ServerState::Error => {
                 let _ = fs::remove_file(&self.pid_file);
@@ -395,60 +396,67 @@ impl CliHandler {
     }
     
     pub async fn status(&self) -> Result<bool, CliError> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let runtime_dir = PathBuf::from(&home).join(".nexa");
-        
-        let mut sys = System::new_all();
-        sys.refresh_all();
-        
-        let state = if let Ok(state_str) = fs::read_to_string(runtime_dir.join("nexa.state")) {
-            state_str.trim().to_string()
-        } else {
-            "Stopped".to_string()
-        };
+        info!("Checking server status...");
 
-        if state == "Running" {
-            // Try to connect to verify server is actually responding
-            let http_port = 3000;
-            let http_url = format!("http://127.0.0.1:{}/api/server/status", http_port);
-            
-            debug!("Checking server health at {}", http_url);
-            let is_responding = match reqwest::get(&http_url).await {
-                Ok(response) => response.status().is_success(),
-                Err(e) => {
-                    debug!("Failed to connect to HTTP endpoint: {}", e);
-                    false
+        // Load configuration to get the correct port
+        let config = ServerConfig::load()?;
+        let port = config.server.port;
+        let host = &config.server.host;
+
+        // Check HTTP endpoint with correct port
+        let status_url = format!("http://{}:{}/api/server/status", host, port);
+        debug!("Checking server health at {}", status_url);
+
+        match reqwest::get(&status_url).await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    println!("\nServer Status: 🟢 Running");
+                    println!("Server State: {}", "Running");
+                    
+                    // Display resource usage
+                    if let Ok(metrics) = response.json::<serde_json::Value>().await {
+                        if let Some(cpu) = metrics.get("cpu_usage") {
+                            println!("Resource Usage:");
+                            println!("  CPU: {:.1}%", cpu.as_f64().unwrap_or(0.0) * 100.0);
+                        }
+                        if let Some(mem) = metrics.get("memory_usage") {
+                            println!("  Memory: {:.1}%", mem.as_f64().unwrap_or(0.0) * 100.0);
+                        }
+                    }
+                    Ok(true)
+                } else {
+                    println!("\nServer Status: 🔴 Error");
+                    println!("HTTP endpoint returned error: {}", response.status());
+                    Ok(false)
                 }
-            };
-
-            println!("\nServer Status: 🟢 Running");
-            println!("Server State: \"Running\"");
-            println!("Resource Usage:");
-            println!("  CPU: {:.1}%", sys.global_cpu_usage());
-            println!("  Memory: {:.1}%", sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0);
-            
-            if is_responding {
-                println!("\nEndpoints:");
-                println!("  HTTP API: http://localhost:{}", http_port);
-                println!("  Swagger UI: http://localhost:{}/swagger-ui/", http_port);
-            } else {
-                println!("\n⚠️  Warning: Server process is running but HTTP endpoint is not responding");
-                println!("This could be because:");
-                println!("  1. The server is still starting up");
-                println!("  2. The server crashed but left the state file");
-                println!("  3. The HTTP endpoint is misconfigured");
-                println!("\nTry:");
-                println!("  1. Wait a few seconds and check status again");
-                println!("  2. Run: nexa stop && nexa start");
-                println!("  3. Check the server logs for errors");
             }
-        } else {
-            println!("\nServer Status: 🔴 Stopped");
-            println!("Server State: \"Stopped\"");
-            println!("\nTo start the server, run: nexa start");
+            Err(e) => {
+                debug!("Failed to connect to HTTP endpoint: {}", e);
+                
+                // Check if process is running despite HTTP endpoint being down
+                if self.is_server_running() {
+                    println!("\nServer Status: 🟢 Running");
+                    println!("Server State: \"Running\"");
+                    println!("Resource Usage:");
+                    println!("  CPU: {:.1}%", get_cpu_usage() * 100.0);
+                    println!("  Memory: {:.1}%", get_memory_usage() * 100.0);
+                    println!("\n⚠️  Warning: Server process is running but HTTP endpoint is not responding");
+                    println!("This could be because:");
+                    println!("  1. The server is still starting up");
+                    println!("  2. The server crashed but left the state file");
+                    println!("  3. The HTTP endpoint is misconfigured");
+                    println!("\nTry:");
+                    println!("  1. Wait a few seconds and check status again");
+                    println!("  2. Run: nexa stop && nexa start");
+                    println!("  3. Check the server logs for errors");
+                    Ok(true)
+                } else {
+                    println!("\nServer Status: 🔴 Stopped");
+                    println!("No server process found");
+                    Ok(false)
+                }
+            }
         }
-        
-        Ok(state == "Running")
     }
 
     /// Creates a new agent with the given configuration
@@ -540,7 +548,7 @@ impl CliHandler {
     async fn get_agent(&self, agent_id: &str) -> Result<Agent, NexaError> {
         let agent_file = self.agents_dir.join(format!("{}.json", agent_id));
         let content = fs::read_to_string(&agent_file)
-            .map_err(|e| NexaError::Io(e.to_string()))?;
+            .map_err(|e| NexaError::Io(e))?;
         serde_json::from_str(&content)
             .map_err(|e| NexaError::Json(e.to_string()))
     }
@@ -551,7 +559,8 @@ impl CliHandler {
         let content = serde_json::to_string_pretty(agent)
             .map_err(|e| NexaError::Json(e.to_string()))?;
         fs::write(&agent_file, content)
-            .map_err(|e| NexaError::Io(e.to_string()))
+            .map_err(|e| NexaError::Io(e))?;
+        Ok(())
     }
 
     /// Lists all agents with optional filtering
@@ -618,48 +627,36 @@ impl CliHandler {
 
     pub async fn connect_llm(&self, provider: &str) -> Result<(), NexaError> {
         info!("Connecting to LLM server: {}", provider);
-        match provider {
-            "openai" => {
-                // Implementation for OpenAI
-                Ok(())
-            }
+        match provider.to_lowercase().as_str() {
             "lmstudio" => {
                 let client = reqwest::Client::new();
                 let response = client.get("http://localhost:1234/v1/models")
                     .send()
                     .await
-                    .map_err(|e| NexaError::System(e.to_string()))?;
+                    .map_err(|e| NexaError::System(format!("Failed to connect to LM Studio: {}. Make sure LM Studio is running and Local Server is enabled in Settings.", e)))?;
 
                 if response.status().is_success() {
-                    let models: serde_json::Value = response.json().await
-                        .map_err(|e| NexaError::Json(e.to_string()))?;
-                    
-                    if let Some(data) = models.get("data") {
-                        if let Some(array) = data.as_array() {
-                            let models = array.iter()
-                                .filter_map(|m| m.get("id"))
-                                .filter_map(|id| id.as_str())
-                                .map(|s| s.to_string())
-                                .collect::<Vec<_>>();
-                            if models.is_empty() {
-                                Err(NexaError::System("No models found in LM Studio".to_string()))
-                            } else {
-                                Ok(())
-                            }
-                        } else {
-                            Err(NexaError::System("Invalid response format from LM Studio".to_string()))
-                        }
-                    } else {
-                        Err(NexaError::System("Invalid response format from LM Studio".to_string()))
-                    }
+                    info!("Successfully connected to LM Studio");
+                    Ok(())
                 } else {
-                    let status = response.status();
-                    let error_text = response.text().await
-                        .unwrap_or_else(|_| "Unknown error".to_string());
-                    Err(NexaError::System(format!("Failed to connect ({}): {}", status, error_text)))
+                    Err(NexaError::System("Failed to connect to LM Studio server".to_string()))
                 }
             }
-            _ => Err(NexaError::System(format!("Unsupported LLM provider: {}", provider)))
+            "ollama" => {
+                let client = reqwest::Client::new();
+                let response = client.get("http://localhost:11434/api/tags")
+                    .send()
+                    .await
+                    .map_err(|e| NexaError::System(format!("Failed to connect to Ollama: {}. Make sure Ollama is running.", e)))?;
+
+                if response.status().is_success() {
+                    info!("Successfully connected to Ollama");
+                    Ok(())
+                } else {
+                    Err(NexaError::System("Failed to connect to Ollama server".to_string()))
+                }
+            }
+            _ => Err(NexaError::System(format!("Unsupported LLM provider: {}. Supported providers are: ollama, lmstudio", provider)))
         }
     }
 
@@ -691,7 +688,7 @@ impl CliHandler {
     }
 
     pub async fn list_models(&self, provider: &str) -> Result<Vec<LLMModel>, Box<dyn std::error::Error>> {
-        match provider {
+        match provider.to_lowercase().as_str() {
             "lmstudio" => {
                 let client = reqwest::Client::new();
                 match client.get("http://localhost:1234/v1/models")
@@ -707,24 +704,23 @@ impl CliHandler {
                                     .map(|m| LLMModel {
                                         name: m["id"].as_str().unwrap_or("unknown").to_string(),
                                         provider: "LM Studio".to_string(),
-                                        description: "LM Studio model".to_string(),
+                                        description: m["description"].as_str()
+                                            .unwrap_or("Local LM Studio model").to_string(),
                                         quantization: None,
                                     })
                                     .collect::<Vec<_>>();
-                                if models.is_empty() {
-                                    Err(Box::new(NexaError::LLMError("No models found in LM Studio".to_string())))
-                                } else {
-                                    Ok(models)
-                                }
+                                Ok(models)
                             },
-                            Err(e) => Err(Box::new(NexaError::LLMError(format!("Failed to parse LMStudio response: {}", e))))
+                            Err(e) => Err(Box::new(NexaError::LLMError(format!("Failed to parse LM Studio response: {}", e))))
                         }
                     },
                     Err(e) => {
                         if e.is_connect() {
-                            Err(Box::new(NexaError::LLMError("LM Studio server is not running. Please start LM Studio and enable the local server in Settings -> Local Server".to_string())))
+                            Err(Box::new(NexaError::LLMError(
+                                "LM Studio server is not running. Please start LM Studio and enable the local server in Settings -> Local Server".to_string()
+                            )))
                         } else {
-                            Err(Box::new(NexaError::LLMError(format!("Failed to connect to LMStudio: {}", e))))
+                            Err(Box::new(NexaError::LLMError(format!("Failed to connect to LM Studio: {}", e))))
                         }
                     }
                 }
@@ -744,8 +740,13 @@ impl CliHandler {
                                     .map(|m| LLMModel {
                                         name: m["name"].as_str().unwrap_or("unknown").to_string(),
                                         provider: "Ollama".to_string(),
-                                        description: "Ollama model".to_string(),
-                                        quantization: None,
+                                        description: format!(
+                                            "Local Ollama model - {}",
+                                            m["details"].as_str().unwrap_or("")
+                                        ),
+                                        quantization: m["quantization"]
+                                            .as_str()
+                                            .map(|s| s.to_string()),
                                     })
                                     .collect::<Vec<_>>();
                                 Ok(models)
@@ -753,10 +754,18 @@ impl CliHandler {
                             Err(e) => Err(Box::new(NexaError::LLMError(format!("Failed to parse Ollama response: {}", e))))
                         }
                     },
-                    Err(e) => Err(Box::new(NexaError::LLMError(format!("Failed to connect to Ollama API: {}", e))))
+                    Err(e) => {
+                        if e.is_connect() {
+                            Err(Box::new(NexaError::LLMError(
+                                "Ollama server is not running. Please start Ollama first.".to_string()
+                            )))
+                        } else {
+                            Err(Box::new(NexaError::LLMError(format!("Failed to connect to Ollama: {}", e))))
+                        }
+                    }
                 }
             },
-            _ => Err(Box::new(NexaError::LLMError(format!("Unsupported LLM provider: {}", provider))))
+            _ => Err(Box::new(NexaError::LLMError(format!("Unsupported LLM provider: {}. Supported providers are: ollama, lmstudio", provider))))
         }
     }
 
@@ -810,28 +819,47 @@ impl CliHandler {
 
     async fn try_chat_completion(&self, prompt: &str, model: &str) -> Result<String, NexaError> {
         let client = reqwest::Client::new();
-        let api_key = std::env::var("OPENAI_API_KEY").map_err(|e| NexaError::Config(e.to_string()))?;
         
-        let response = client
-            .post("https://api.openai.com/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&serde_json::json!({
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}]
-            }))
-            .send()
-            .await
-            .map_err(|e| NexaError::LLMError(e.to_string()))?;
+        // Determine provider from model string
+        if model.starts_with("ollama:") {
+            let model_name = model.trim_start_matches("ollama:");
+            let response = client.post("http://localhost:11434/api/generate")
+                .json(&serde_json::json!({
+                    "model": model_name,
+                    "prompt": prompt,
+                    "stream": false
+                }))
+                .send()
+                .await
+                .map_err(|e| NexaError::LLMError(format!("Ollama request failed: {}", e)))?;
 
-        let response_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| NexaError::LLMError(e.to_string()))?;
+            let response_json: serde_json::Value = response.json().await
+                .map_err(|e| NexaError::LLMError(format!("Failed to parse Ollama response: {}", e)))?;
 
-        response_json["choices"][0]["message"]["content"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| NexaError::LLMError("Failed to extract response content".to_string()))
+            response_json["response"].as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| NexaError::LLMError("Failed to extract Ollama response content".to_string()))
+        } else if model.starts_with("lmstudio:") {
+            let model_name = model.trim_start_matches("lmstudio:");
+            let response = client.post("http://localhost:1234/v1/chat/completions")
+                .json(&serde_json::json!({
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": prompt}]
+                }))
+                .send()
+                .await
+                .map_err(|e| NexaError::LLMError(format!("LM Studio request failed: {}", e)))?;
+
+            let response_json: serde_json::Value = response.json().await
+                .map_err(|e| NexaError::LLMError(format!("Failed to parse LM Studio response: {}", e)))?;
+
+            response_json["choices"][0]["message"]["content"]
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| NexaError::LLMError("Failed to extract LM Studio response content".to_string()))
+        } else {
+            Err(NexaError::LLMError(format!("Unsupported model format: {}. Use 'ollama:model-name' or 'lmstudio:model-name'", model)))
+        }
     }
 
     pub async fn test_model(&self, model: &str, test_prompt: &str) -> Result<String, NexaError> {
@@ -1105,7 +1133,8 @@ impl CliHandler {
         let mut agent = self.get_agent(agent_id).await?;
         agent.status = status;
         agent.last_active = Utc::now();
-        self.save_agent(&agent).await
+        self.save_agent(&agent).await?;
+        Ok(())
     }
 }
 
@@ -1177,6 +1206,30 @@ impl From<crate::error::NexaError> for CliError {
         Self {
             message: err.to_string(),
         }
+    }
+}
+
+fn get_cpu_usage() -> f64 {
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    let cpu_usage: f64 = sys.cpus().iter().map(|cpu| cpu.cpu_usage() as f64).sum();
+    let cpu_count = sys.cpus().len() as f64;
+    if cpu_count > 0.0 {
+        cpu_usage / (cpu_count * 100.0)
+    } else {
+        0.0
+    }
+}
+
+fn get_memory_usage() -> f64 {
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let used_memory = sys.used_memory() as f64;
+    let total_memory = sys.total_memory() as f64;
+    if total_memory > 0.0 {
+        used_memory / total_memory
+    } else {
+        0.0
     }
 }
 

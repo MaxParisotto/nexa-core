@@ -196,8 +196,8 @@ impl Server {
             let config = self.config.read().await;
             
             // Parse host address
-            let addr = match config.host.parse::<IpAddr>() {
-                Ok(ip) => SocketAddr::new(ip, config.port),
+            let addr = match config.server.host.parse::<IpAddr>() {
+                Ok(ip) => SocketAddr::new(ip, config.server.port),
                 Err(e) => {
                     error!("Failed to parse host address: {}", e);
                     let mut state = self.state.write().await;

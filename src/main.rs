@@ -1,20 +1,32 @@
 use clap::Parser;
 use log::{info, error};
 use std::process;
-use tokio::time::Duration;
 use std::io::{stdout, Write};
 use crossterm::{
     execute,
-    terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
-    cursor::{Hide, Show},
+    terminal::{Clear, ClearType, EnterAlternateScreen},
+    cursor::Hide,
     style::{Color, Print, SetForegroundColor},
 };
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use daemonize::Daemonize;
 use std::fs::File;
 use std::path::PathBuf;
 use std::os::unix::fs::PermissionsExt;
-use crate::server::ServerState;
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
+
+use crate::cli::{Cli, Commands, CliHandler};
+use crate::types::agent::AgentConfig;
+use crate::llm::system_helper::TaskPriority;
+use crate::types::workflow::{WorkflowStep, AgentAction, RetryPolicy};
+use crate::mcp::cluster::{ClusterManager, types::ClusterConfig};
+use crate::tokens::TokenManager;
+use crate::monitoring::MonitoringSystem;
+use crate::error::NexaError;
+use crate::server::{Server, ServerState};
+use crate::startup::StartupManager;
 
 mod cli;
 mod types;
@@ -29,12 +41,10 @@ mod tokens;
 mod settings;
 mod utils;
 mod config;
+mod startup;
+mod mcp;
 
-use crate::cli::{Cli, Commands, CliHandler};
-use crate::types::agent::AgentConfig;
-use crate::llm::system_helper::TaskPriority;
-use crate::types::workflow::{WorkflowStep, AgentAction, RetryPolicy};
-
+#[allow(dead_code)]
 async fn display_stats_dashboard(_: &CliHandler) -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout(), EnterAlternateScreen, Hide)?;
 
@@ -58,37 +68,78 @@ async fn display_stats_dashboard(_: &CliHandler) -> Result<(), Box<dyn std::erro
     }
 }
 
+async fn start_server(_handler: &CliHandler) -> Result<(), Box<dyn std::error::Error>> {
+    let server = Server::new(
+        PathBuf::from("/var/run/nexa/nexa.pid"),
+        PathBuf::from("/var/run/nexa/nexa.sock"),
+    );
+    
+    server.start().await?;
+    
+    // Wait for shutdown signal
+    tokio::signal::ctrl_c().await?;
+    info!("Shutdown signal received");
+    server.stop().await?;
+    Ok(())
+}
 #[tokio::main]
-async fn main() {
-    // Initialize logging
-    env_logger::init();
-
-    // Parse command line arguments
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command line arguments and initialize CLI handler.
     let cli = Cli::parse();
     let handler = CliHandler::new();
 
-    // Setup Ctrl+C handler
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    ctrlc::set_handler(move || {
-        let _ = tx.blocking_send(());
-    }).expect("Error setting Ctrl-C handler");
+    // Initialize logging.
+    env_logger::init();
+    info!("Starting Nexa Core...");
 
+    // Load server configuration.
+    let config = config::ServerConfig::load()?;
+    
+    // Initialize core components.
+    let token_manager = Arc::new(TokenManager::new());
+    let monitoring = Arc::new(MonitoringSystem::new(token_manager.clone()));
+    
+    // Parse bind address from configuration.
+    let bind_addr = config.server.host.parse::<IpAddr>()
+        .map_err(|e| NexaError::Config(format!("Invalid host address: {}", e)))?;
+    let addr = SocketAddr::new(bind_addr, config.server.port);
+    
+    // Create cluster configuration based on server settings.
+    let cluster_config = ClusterConfig {
+        heartbeat_interval: Duration::from_millis(config.server.connection_timeout),
+        election_timeout: (
+            Duration::from_millis(config.server.connection_timeout * 2),
+            Duration::from_millis(config.server.connection_timeout * 4)
+        ),
+        min_quorum_size: 3,
+        node_timeout: Duration::from_secs(config.server.connection_timeout),
+        replication_factor: 3,
+        cluster_id: "nexa-cluster".to_string(),
+    };
+    
+    let cluster = Arc::new(ClusterManager::new(addr, Some(cluster_config)));
+
+    // Run the startup sequence and exit if it fails.
+    let startup_manager = StartupManager::new(
+        config.clone(),
+        monitoring.clone(),
+        cluster.clone(),
+    );
+    if let Err(e) = startup_manager.run_startup_sequence().await {
+        error!("Startup sequence failed: {}", e);
+        process::exit(1);
+    }
+
+    // Process CLI commands. If no command is provided, start the server.
     match cli.command {
-        Some(cmd) => {
-            process_command(&cmd, &handler).await;
-        }
+        Some(cmd) => process_command(&cmd, &handler).await,
         None => {
-            // Show real-time dashboard
-            let dashboard = display_stats_dashboard(&handler);
-            tokio::select! {
-                _ = dashboard => {},
-                _ = rx.recv() => {
-                    // Cleanup and restore terminal
-                    execute!(stdout(), Show, LeaveAlternateScreen).unwrap_or(());
-                }
-            }
+            info!("No command specified, starting server...");
+            start_server(&handler).await?;
         }
     }
+
+    Ok(())
 }
 
 async fn process_command(command: &Commands, handler: &CliHandler) {
